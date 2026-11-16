@@ -1,0 +1,214 @@
+# Inverse design of genetic perturbations — baseline acquisition & feasibility probe
+
+Status as of **2026-11-13**. Covers the proposal's first milestone ("Now ~ Oct 31:
+download baseline code, dataset(s) and baseline forward/inverse model weights and a
+working environment") plus a feasibility probe of the dataset assumptions.
+
+Code lives here (small, versionable). Everything large lives on scratch:
+
+```
+/zfsauton2/home/yixiz/10703_pj/        this repo: jobs, scripts, env
+/zfsauton/scratch/yixiz/10703_pj/
+  code/        cloned baselines (untrusted third-party)
+  data/        downloaded datasets (untrusted)
+  weights/     downloaded checkpoints (untrusted)
+  artifacts/   OUR computed results: json / jsonl / npz
+  figures/     OUR plots, redrawable from artifacts alone
+  logs/        slurm .out
+  envfiles/    one env file per submission
+```
+
+## Quick start
+
+```bash
+cd /zfsauton2/home/yixiz/10703_pj
+./submit.sh              # full DAG
+./submit.sh fetch        # downloads + env build only
+./submit.sh analyze      # profile + oracle probe + figures
+./submit.sh figures      # redraw figures from existing artifacts (cheap)
+./submit.sh gen          # generalization headroom (unseen gene/pair/context) + its figures
+./submit.sh genfigs      # redraw only fig13-fig14 (cheap)
+./submit.sh rl           # is the unseen-gene gap RL-shaped? (PJ_RL_PARTS="1 2" selects parts)
+./submit.sh rlacq        # RL on the acquisition gap: cache -> baselines + training array -> report
+./submit.sh rlacq_report # redraw the RL table/figures from saved runs (cheap)
+squeue -u $USER -o '%.8i %.9P %.16j %.8T %.10M %R'
+```
+
+Config is passed as **one timestamped env file as a positional argument**, never via
+`sbatch --export` (an explicit export list sets `SLURM_GET_USER_ENV=1`; the login-env
+rebuild fails on the compute node and the job is requeued+held). Defaults live once in
+[env/common.sh](env/common.sh).
+
+## What is downloaded
+
+### Code (`scratch/code/`, SHAs in `artifacts/code_provenance.json`)
+
+| repo | role | ref / date |
+|---|---|---|
+| [snap-stanford/GEARS](https://github.com/snap-stanford/GEARS) | forward oracle (reward + cycle consistency) | `f374e43` 2025-02-01 |
+| [mims-harvard/PDGrapher](https://github.com/mims-harvard/PDGrapher) | supervised inverse baseline, Nature BME 2025 | `41285f9` 2025-10-02 |
+| [theislab/LabCompass](https://github.com/theislab/LabCompass) | **SOTA inverse design** (flow matching + guidance) | `cc3d73b` 2026-10-28 |
+| [theislab/cellflow](https://github.com/theislab/cellflow) | flow-matching perturbation backbone | `446ed60` 2026-07-12 |
+| [ArcInstitute/state](https://github.com/ArcInstitute/state) | SOTA forward oracle (Arc virtual cell) | `9bbfe78` 2026-07-23 |
+
+LabCompass is the paper the proposal calls "LabCompass's per-target differentiable
+guidance of a frozen prior" — Paulas-Condori et al., *Generative inverse design steers
+human hematopoietic cell fate in vitro*, bioRxiv `2026.10.07.756550`. Code was published
+2026-10-28, after the proposal was written; it is the direct competitor and is read
+closely in [GAPS.md](GAPS.md).
+
+### Datasets (`scratch/data/`)
+
+GEARS-processed perturb-seq, from Harvard Dataverse (ids read out of
+`GEARS@master gears/pertdata.py`):
+
+| dataset | cells | genes | perturbed conditions | file |
+|---|---|---|---|---|
+| norman | 91,205 | 5,045 | 283 (152 single + 131 combo) | 2.1 G |
+| adamson | 68,603 | 5,060 | 86 | 579 M |
+| dixit | 44,735 | 5,012 | 19 | 677 M |
+| replogle_k562_essential | 162,751 | 5,000 | 1,092 | 2.7 G |
+| replogle_rpe1_essential | 162,733 | 5,000 | 1,543 | 2.7 G |
+
+Plus `gene2go_all.pkl` (9.1 M), `essential_all_data_pert_genes.pkl` (546 K),
+`go_essential_all.csv` (58 M).
+
+PDGrapher processed data from Zenodo [15375990](https://zenodo.org/records/15375990):
+`splits.tar.gz` (6.6 M) + `torch_data_genetic.tar.gz` (21.7 G). Genetic splits cover
+10 cell lines — A375, A549, AGS, BICR6, ES2, HT29, MCF7, PC3, U251MG, YAPC — as
+`genetic/<line>/random/5fold/splits.pt`, with `torch_data/real_lognorm/data_{forward,
+backward}_<LINE>.pt` (4–6 G each). The 37.3 G chemical tarball
+([15390483](https://zenodo.org/records/15390483)) is **not** fetched by default;
+`FETCH_PDG_CHEMICAL=1 ./submit.sh fetch` gets it.
+
+> **Known issue:** the first extraction exited 1 partway through and left
+> `data_backward_HT29.pt` at **0 bytes** while the other nine cell lines extracted
+> fine. `jobs/12b_repair_pdgrapher.sbatch` re-extracts and then verifies every member,
+> so a partial extraction cannot look like success. If HT29 is still empty afterwards,
+> check the Zenodo record itself — but note the paper reports HT29 results, so an empty
+> file there would be suspicious.
+
+### Weights (`scratch/weights/`)
+
+`gears_norman_official/` — the **official** GEARS Norman checkpoint
+(`model_ckpt/model.pt` 8.9 M + `config.pkl`) and its matching dataloader
+`norman_umi_go/` (3.2 G h5ad + 3.7 G cell-graph pickle), from Dataverse ids
+`10457098` and `6979957` as used by `GEARS/demo/tutorial_inference_Norman.ipynb`.
+
+> The checkpoint is `gears_misc_umi_no_test`, i.e. **split='no_test'** — trained on
+> every Norman perturbation. It cannot give held-out oracle numbers. See
+> [GAPS.md](GAPS.md) gap 6 and `jobs/22_retrain_oracle.sbatch`.
+
+## Environments
+
+| env | python | contents | used by |
+|---|---|---|---|
+| `/zfsauton/scratch/yixiz/envs/cellflow` | 3.12 | scanpy 1.12, anndata 0.13, numpy 2.4 | profiling, figures |
+| `/zfsauton/scratch/yixiz/envs/pertrl` | 3.11 | torch 2.4.1+cu121, PyG 2.6.1, scanpy 1.10, **numpy 1.26**, cell-gears 0.1.2 | GEARS oracle |
+
+`pertrl` pins `numpy<2` deliberately: `essential_all_data_pert_genes.pkl` is a pickle
+referencing `numpy.core.multiarray`, a path removed in numpy 2.x, so GEARS's own data
+files cannot be loaded under the numpy the analysis env uses. cu121 wheels cover every
+GPU in this pool (sm_70 v100 → sm_90 h200).
+
+## Jobs
+
+| job | partition | what |
+|---|---|---|
+| `10_fetch_code` | cpu | clone the 5 baselines, record SHAs |
+| `11_fetch_gears_data` | cpu | perturb-seq datasets + aux + official oracle |
+| `12_fetch_pdgrapher_data` | cpu | PDGrapher splits + genetic torch_data |
+| `13_build_torch_env` | cpu | build `pertrl` via uv; always exits 0, writes a status file |
+| `12b_repair_pdgrapher` | cpu | re-extract + verify every `.pt` member |
+| `20_profile` | cpu | dataset stats + identifiability → artifacts |
+| `21_oracle_probe` | legacy (1 GPU) | GEARS vs trivial baselines, top-20 DE genes |
+| `22_retrain_oracle` | legacy (1 GPU) | retrain under `split='simulation'`, re-probe held out |
+| `23_inverse_gap` | legacy (1 GPU) | the ladder: ceiling / oracle / non-conditional / chance |
+| `24_trivial_rule` | cpu | is identification just reading the knocked-down gene? |
+| `25_generalization` | cpu | headroom on unseen gene / unseen pair / unseen context |
+| `26_rl_headroom` | cpu | is the unseen-gene gap RL-shaped? objective / acquisition / adaptivity / reward noise |
+| `40_rl_cache` | cpu | cache the acquisition-MDP inputs; gate: reproduces GAPS part 4's random median |
+| `41_rl_baselines` | cpu, array | random x100, GO coverage, GO facility location, greedy and cheat over seeds |
+| `42_rl_train` | cpu, array | RL runs: REINFORCE (per-gene logits), PPO feature policy (peek/blind), learned critic |
+| `43_rl_report` | cpu | re-score every chosen set in GAPS's env, table, fig15-fig16 |
+| `30_figures` | cpu | aggregate figures, drawn from artifacts |
+| `31_case_studies` | cpu | named individual perturbations rather than metrics |
+| `33_generalization_figures` | cpu | redraw fig13-fig14 from `artifacts/generalization/` |
+
+### Figures
+
+| file | shows |
+|---|---|
+| `fig1_action_space` | perturbable genes, labelled conditions, oracle visibility |
+| `fig2_identifiability` | nearest-centroid retrieval vs cells pooled |
+| `fig3_effect_and_confusability` | single-cell SNR, signature collinearity, DE breadth |
+| `fig4_data_budget` | cells per condition, control pool |
+| `fig5_signature_space` | PCA of Δ-signatures, effective dimension |
+| `fig6_oracle_quality` | GEARS vs control-mean vs mean-perturbed, top-20 DE |
+| `fig7_published_gap` | every published baseline vs chance (CDN Table 1) |
+| `fig8_inverse_ladder` | ceiling / oracle / non-conditional / chance |
+| `fig9_trivial_rule` | where the perturbed gene's own \|Δ\| ranks |
+| **`fig10_barcode_cases`** | **one representative perturbation per dataset, target marked** |
+| **`fig11_oracle_cases`** | **named perturbations: measured vs GEARS vs average effect** |
+| **`fig12_retrieval_cases`** | **what the oracle ranks above the right answer** |
+| **`fig13_headroom_by_axis`** | **ceiling vs best cheap predictor: unseen gene / pair / context** |
+| **`fig14_context_transfer`** | **few-shot cross-line transfer + is it even the same effect** |
+
+`fig10`–`fig12` are case studies: named perturbations, with the selection rule printed on
+every panel and representative cases picked by **median** rank rather than cherry-picked.
+
+### Two traps worth knowing about
+
+**`PertData.load()` unpickles a 3.7 GB cell-graph cache unconditionally**
+(`pertdata.py` ~l.200), which took **over 30 minutes** on this NFS mount under load and
+is never read by `predict()`. `PJ_ORACLE_FAST=1` / `PJ_INVGAP_FAST=1` intercept that one
+filename and set `node_map`/`gene_names` exactly as `get_dataloader()` would
+(`pertdata.py` l.429-430), cutting startup to **11 seconds**. `set_pert_genes()` and
+`prepare_split()` still run on the real `PertData`, so the perturbation indexing stays
+GEARS's own.
+
+**`uns['top_non_dropout_de_20']` holds Ensembl IDs, not gene names**, in the
+`norman_umi_go` release — while `adata.var` carries both `gene_id` and `gene_name`.
+Matching the wrong one silently empties every DE set, and the probe then reports
+`status: ok` with zero rows. `scripts/oracle_probe.py` now indexes both and counts
+unresolved conditions so this cannot pass as success.
+
+Conventions followed throughout: GPU work only where a GPU is needed and everything
+that just reads saved artefacts runs on `cpu`; figures are redrawable without
+recomputation; every job prints `hostname`, `nvidia-smi -L` and its resource request
+(there is no `sacct` here, so the node is otherwise unrecoverable after the fact);
+`set -euo pipefail` sits in each job body, not only the preamble; and a job whose gate
+fails prints why and **exits 0** rather than stranding dependents in
+`DependencyNeverSatisfied`.
+
+Two environment facts measured here, worth keeping: `unzip` is **not installed** on the
+compute nodes (extraction goes through `pj_unzip`, a python `zipfile` helper), and `du`
+misreports individual file sizes on this NFS mount (the summaries use `stat -c%s`).
+
+## Findings
+
+**[GAPS.md](GAPS.md)** — seven gaps ordered by headroom, each with its figure inline, plus
+the novelty re-scoping, recommendations and the evaluation traps worth knowing about.
+
+Plots live in two places: [figures/](figures/) in this repo (checked in, 1.8 MB, so the
+markdown renders anywhere) and `$PJ_FIGURES` on scratch, which is what
+`jobs/30_figures.sbatch` and `jobs/31_case_studies.sbatch` write. After re-running either,
+refresh the copies here:
+
+```bash
+cp /zfsauton/scratch/yixiz/10703_pj/figures/*.png figures/
+```
+
+The headline: the measured ceiling on Norman is **86.6%** top-1 from a 128-cell target,
+the GEARS-driven oracle rung is **8.3%**, and GEARS beats a predictor that ignores the
+perturbation's identity on only **44.8%** of conditions. The bottleneck is the reward
+model, not the generator.
+
+Gap 0 then asks *where* that headroom actually lives, since a perturbation the atlas has
+already measured needs no model at all. Of the three ways to be unseen, only **unseen
+gene** is a gap: unseen pairs are closed outright by adding two single-gene signatures
+(**71.6%** vs a **71.1%** ceiling, while GEARS trained on those very combos gets 16.1%),
+and cross-cell-line transfer is partly irreducible (disattenuated cross-context cosine
+median **0.42**). On the unseen-gene axis every cheap predictor — GO kNN, co-response kNN,
+the published linear baseline — sits at **0.8–1.9%** top-1 against a **32.5–88.9%**
+ceiling.
