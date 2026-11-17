@@ -75,12 +75,16 @@ state|https://github.com/ArcInstitute/state|main}"
 # set into the env file, so these stay the single source of defaults.
 : "${PJ_RLA_DATASETS:=replogle_k562_essential replogle_rpe1_essential}"
 : "${PJ_RLA_SPLITS:=4 104 204}"
-: "${PJ_RLA_METHODS:=pg_tab pg_tab_boot ppo_peek ppo_blind critic}"
+# The last four attack the blind regime, the one the first round left open (see
+# scripts/rl_acquire.py BLIND_VARIANTS): deployment-scale training sub-problems,
+# richer gene priors than GO Jaccard, training on the other cell line, and both.
+: "${PJ_RLA_METHODS:=pg_tab pg_tab_boot ppo_peek ppo_blind critic ppo_blind_match ppo_blind_rich ppo_blind_xline ppo_blind_xline_rich}"
 : "${PJ_RLA_SEEDS:=0 1 2}"
-: "${PJ_RLA_MAXPAR:=24}"   # concurrent array tasks
+: "${PJ_RLA_PER_TASK:=6}"  # grid entries run in parallel in one array task (qos_cpu: 50 jobs, 352 CPUs per user)
+: "${PJ_RLA_MAXPAR:=30}"   # concurrent array tasks
 : "${PJ_RLA_SMOKE:=}"      # 1 = tiny training settings, results to artifacts/rl_acquire_smoke/
 : "${PJ_RLA_FORCE:=}"      # 1 = redo tasks whose result file already exists
-export PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS PJ_RLA_MAXPAR PJ_RLA_SMOKE PJ_RLA_FORCE
+export PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS PJ_RLA_PER_TASK PJ_RLA_MAXPAR PJ_RLA_SMOKE PJ_RLA_FORCE
 
 # ---------------------------------------------------------------- helpers
 pj_banner() {

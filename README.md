@@ -30,7 +30,10 @@ cd /zfsauton2/home/yixiz/10703_pj
 ./submit.sh genfigs      # redraw only fig13-fig14 (cheap)
 ./submit.sh rl           # is the unseen-gene gap RL-shaped? (PJ_RL_PARTS="1 2" selects parts)
 ./submit.sh rlacq        # RL on the acquisition gap: cache -> baselines + training array -> report
+./submit.sh rlacq_base   # baselines array only (PJ_RLA_FORCE=1 to add a new strategy)
+./submit.sh rlacq_runs   # training array + report only (baselines already there)
 ./submit.sh rlacq_report # redraw the RL table/figures from saved runs (cheap)
+PJ_RLA_SMOKE=1 ./submit.sh rlacq_smoke   # 3-iteration code-path check, no report
 squeue -u $USER -o '%.8i %.9P %.16j %.8T %.10M %R'
 ```
 
@@ -128,8 +131,8 @@ GPU in this pool (sm_70 v100 → sm_90 h200).
 | `25_generalization` | cpu | headroom on unseen gene / unseen pair / unseen context |
 | `26_rl_headroom` | cpu | is the unseen-gene gap RL-shaped? objective / acquisition / adaptivity / reward noise |
 | `40_rl_cache` | cpu | cache the acquisition-MDP inputs; gate: reproduces GAPS part 4's random median |
-| `41_rl_baselines` | cpu, array | random x100, GO coverage, GO facility location, greedy and cheat over seeds |
-| `42_rl_train` | cpu, array | RL runs: REINFORCE (per-gene logits), PPO feature policy (peek/blind), learned critic |
+| `41_rl_baselines` | cpu, array | random x100, GO coverage, facility location (3 prior views), greedy and cheat over seeds |
+| `42_rl_train` | cpu, array | RL runs: REINFORCE (per-gene logits), PPO feature policy (peek/blind + 4 blind variants), learned critic |
 | `43_rl_report` | cpu | re-score every chosen set in GAPS's env, table, fig15-fig16 |
 | `30_figures` | cpu | aggregate figures, drawn from artifacts |
 | `31_case_studies` | cpu | named individual perturbations rather than metrics |
@@ -153,6 +156,8 @@ GPU in this pool (sm_70 v100 → sm_90 h200).
 | **`fig12_retrieval_cases`** | **what the oracle ranks above the right answer** |
 | **`fig13_headroom_by_axis`** | **ceiling vs best cheap predictor: unseen gene / pair / context** |
 | **`fig14_context_transfer`** | **few-shot cross-line transfer + is it even the same effect** |
+| **`fig15_rl_acquisition`** | **RL vs greedy vs facility location on gene acquisition, per split x seed; the five blind variants sit on the static floor** |
+| **`fig16_rl_curves`** | **PPO learning curves: validation vs facility location, report set (diagnostic)** |
 
 `fig10`–`fig12` are case studies: named perturbations, with the selection rule printed on
 every panel and representative cases picked by **median** rank rather than cherry-picked.

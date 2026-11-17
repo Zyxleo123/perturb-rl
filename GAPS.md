@@ -20,6 +20,26 @@ published linear baseline included, sits at **0.8–1.9% top-1 against a 32.5–
 ceiling**. The gaps below are all measured on perturbations the atlas has already seen,
 where the task is a lookup; gap 0 is the one with somewhere to go.
 
+**RL closes part of the acquisition gap inside gap 0 (added 2026-11-16).** Choosing which
+100 of 437 genes to measure is a budgeted decision problem, and greedy on a noisy reward
+captures ~1.24× random. With the same information, REINFORCE, a critic-shrunk greedy and a
+PPO feature policy reach **1.35–1.38× on K562 and 1.54–1.59× on RPE1**, beating greedy in
+85 of 90 paired runs and roughly doubling the share of the cheating bound's margin
+captured (22–23% → 34–48%). When a candidate's signature is hidden until it is measured,
+which is genuine experimental design, the RL policy only matches a static GO
+facility-location heuristic. See "RL on the acquisition gap" below.
+
+**That blind regime is now closed as a negative, and the negative is the sharper result
+(added 2026-11-17).** The three levers named for it — deployment-scale training
+sub-problems, richer gene priors than GO Jaccard, and training on another cell line's whole
+atlas — were all run, 72 runs, and **all four variants are statistically indistinguishable
+from the static heuristic** (|t| ≤ 1.4 paired, win rates 3/9–6/9). The scale hypothesis is
+refuted rather than merely unconfirmed: matching the scale *lowered* the policy's advantage
+on its own validation problems (1.085× → 1.028×), so that advantage was never there to be
+lost in transfer. The usable statement is a separation — *seeing candidate signatures is
+worth 1.35–1.59×; prior knowledge alone is worth 1.23–1.30×, and a classical
+facility-location heuristic already extracts all of it.* See "The blind regime" below.
+
 The reward oracle, not the generator, is what limits this project. On Norman, a
 parameter-free nearest-centroid match recovers the correct perturbation **86.6%** of the
 time from a 128-cell target, while ranking the same 230 candidates by GEARS-predicted
@@ -254,6 +274,259 @@ is actively harmful here; the harm disappears monotonically as the estimate impr
 
 Reproduce with `./submit.sh rl` (`PJ_RL_PARTS="1 2"` selects parts; `PJ_RL_RANDOM_ONLY=1`
 re-measures only the random distribution).
+
+> **Two of the numbers above are single draws (corrected 2026-11-16, next section).** The
+> "+24%, > p95, > max" for greedy at 400 reward genes and the cheat's 0.293 are each one
+> run, and greedy's path depends on arbitrary tie-breaking in the kNN. Over 3 splits × 8
+> seeds, part 4's exact protocol averages **1.18× random on K562 and 1.24× on RPE1**. The
+> qualitative reading (the reward is noisy; greedy captures a minority of the prize)
+> survives. The specific margins do not.
+
+---
+
+## RL on the acquisition gap
+
+**Added 2026-11-16.** Framing B ended on a claim to test: greedy acquisition chases its
+reward's noise and captures ~1.2× random of a ~2× prize, which is the failure that learned
+baselines, variance reduction and policy generalisation exist for. Three RL approaches,
+each testing a different explanation of why greedy falls short, on exactly part 4's task:
+choose 100 of 437 genes, build the GO-kNN predictor from the chosen genes, and score
+retrieval MRR on report genes no method sees. The run uses part 4's split (seed 4
+reproduces its random median to 1e-6) plus two more splits, with 3 seeds per method.
+
+| method | what is learned | explanation it tests |
+|---|---|---|
+| REINFORCE, per-gene logits | one Plackett–Luce logit per candidate, leave-one-out baseline; the `resampled` variant draws half the reward genes anew each episode | **search**: same information and objective as greedy, only the optimiser changes |
+| learned critic | fitted one-step value (γ = 0) of a gene's *held-out* gain, from features; used greedily, and as a control variate that shrinks greedy's empirical gain toward it | **reward estimate** |
+| PPO feature policy | 2×32 MLP scoring each candidate from 13 (peek) or 10 (blind) features plus 4 context, group-relative (GRPO-style) advantages, trained on thousands of re-split sub-problems, checkpoint chosen on validation sub-problems | **generalisation**: a rule cannot memorise one reward set |
+
+Two information regimes. **Peek**: every non-report signature is visible, including a
+candidate's before it is chosen. Part 4's greedy used exactly this (it scores a candidate
+by inserting its real signature), so peek is the fair comparison for greedy. **Blind**: a
+signature is revealed only once measured, in 4 batched rounds, and the policy is trained
+only on the already-measured atlas. This is genuine sequential experimental design. Every
+learned method trains on sub-problems re-split three ways (candidates / visible / hidden
+reward), so it is always rewarded on genes its features could not see.
+
+![RL acquisition](figures/fig15_rl_acquisition.png)
+
+| report MRR ÷ random-×100 median | K562 | share of cheat margin | RPE1 | share | beats greedy, paired |
+|---|---:|---:|---:|---:|---|
+| GO facility location (static, no signatures) | 1.23× | 23% | 1.30× | 25% | — |
+| greedy, part 4's protocol (24 runs) | 1.18× | 17% | 1.24× | 20% | — |
+| greedy, every aux gene, every candidate | 1.24× | 23% | 1.26× | 22% | — |
+| **REINFORCE, per-gene logits** | **1.35×** | **34%** | **1.59×** | **48%** | 9/9 · 9/9 |
+| REINFORCE, resampled reward | 1.38× | 37% | 1.58× | 48% | 8/9 · 9/9 |
+| learned critic, used greedily | 1.32× | 32% | 1.41× | 34% | 6/9 · 9/9 |
+| **critic-shrunk greedy** | **1.38×** | **37%** | **1.56×** | **46%** | 9/9 · 9/9 |
+| PPO feature policy, peek | 1.35× | 34% | 1.54× | 44% | 8/9 · 9/9 |
+| PPO feature policy, blind | 1.23× | 22% | 1.33× | 27% | ties facility, 5/9 · 5/9 |
+| best cheating run (selects on the report genes) | 2.02× | 100% | 2.21× | 100% | |
+
+Means over 3 splits × 3 seeds, each run divided by its own split's random median. Every
+peek RL run clears its split's random p95. In absolute terms, K562 goes from 0.217 (greedy,
+all aux genes) to **0.237–0.242**, and RPE1 from 0.129 to **0.157–0.162** (+25%). "Share of
+cheat margin" is (run − random median) / (best cheat − random median) on the same split.
+Every chosen set is re-scored by `rl_headroom`'s own functions in the analysis env
+(below).
+
+**1. With greedy's own information, every RL approach beats greedy, and the share of the
+prize captured roughly doubles.** The peek methods win 85 of 90 paired comparisons with
+greedy on the same split, and all 45 on RPE1. The cheap baselines cluster tightly at
+1.18–1.30×. The RL methods sit at 1.32–1.59×.
+
+**2. All three explanations hold, to different degrees.**
+
+- **Search.** REINFORCE gets the exact reward greedy maximises, and reaches a *higher value
+  of that same reward*: aux MRR 0.233 against greedy's 0.193 on K562, and 0.135 against
+  0.100 on RPE1. Its report MRR is higher as well. With 470–850 reward genes greedy is not
+  mainly overfitting. It is a poor optimiser of a set objective that is not submodular
+  (adding a gene can push a better neighbour out of a target's top 10). Policy gradient on
+  E<sub>S~π</sub>[R(S)] optimises the set jointly. Resampling the reward genes leaves the
+  mean unchanged. It halves the within-split seed spread on RPE1 (sd 0.0040 vs 0.0085) but
+  widens it on K562 (0.0122 vs 0.0079), so it is not a reliable variance reducer here.
+- **Reward estimate.** Greedy's one-step gain, measured on the visible genes, correlates
+  only **r = 0.17** (0.14–0.23) with the same gene's gain on held-out genes. A critic that
+  never sees those genes, predicting from features alone, reaches **0.26**, and the two
+  combined reach 0.28. This is the reward noise of Framing B, now as a number: a gene's
+  value is predicted better from what kind of gene it is than by measuring it on a few
+  hundred visible genes. Shrinking greedy's gain toward the critic beats greedy in 18 of 18
+  paired runs.
+- **Generalisation.** PPO never optimises the deployment reward at all, yet it lands
+  within noise of REINFORCE (1.35× / 1.54×). Its own-reward is low (aux MRR 0.156 vs 0.233),
+  so it got there by learning a rule rather than fitting the reward set. The rule is
+  legible. On gradient attribution, all 18 peek policies agree: prefer genes whose GO
+  neighbours share their signature (`coherence`, +2.7); avoid genes whose signature or GO
+  profile duplicates one already chosen (−1.5, −1.0). REINFORCE's logits belong to the
+  specific candidates it optimised. PPO's rule applies to genes it never saw.
+
+**3. The blind regime is not closed.** When a candidate's signature stays hidden until it
+is measured, PPO matches GO facility location (1.23× vs 1.23×; 1.33× vs 1.30×; 5/9 wins
+each) and does no better. The policy did learn something: at its selected checkpoint it
+beats facility location by 5–13% on validation sub-problems drawn like its training ones
+(fig16, top). That gain does
+not survive the move from training sub-problems (190–340 candidates, budget 43–78, drawn
+from the measured atlas alone) to deployment (437 candidates, budget 100). What it learned
+is facility location plus "prefer genes whose measured GO neighbours agree" and "avoid
+genes whose predicted signature duplicates a measured one".
+
+![PPO learning curves](figures/fig16_rl_curves.png)
+
+**4. The cheat is a looser bound than it looked.** The cheating subsets reach 2.02× and
+2.21× on the genes they were fitted to, and the *lowest* aux MRR of any strategy (0.12 on
+K562, below GO coverage at 0.13 and facility location at 0.15). A subset chosen on 182
+report genes is mostly fitted to those genes. So "share of cheat margin" understates how
+much of the *transferable* prize the RL methods reach, and the real ceiling for a policy
+that cannot see the report genes is somewhere below 2×.
+
+### Two corrections found while building the baselines
+
+**A single greedy run is itself one draw.** GO-kNN picks its 10 neighbours with
+`argpartition`, and GO-Jaccard ties are everywhere. numpy 2.x (the analysis env, where
+GAPS ran) breaks those ties differently from numpy 1.26 (the torch env). The RNG streams
+are identical and the fast scorer agrees with `rl_headroom` to 1e-5, yet part 4's exact
+greedy protocol (400 reward genes, 120 sampled candidates, the same seed) gives **0.221**
+in one env and **0.190** in the other. That is the difference between "+24%, clears p95"
+and "+7%, does not". Over 8 seeds on that split the protocol spans 0.187–0.239, so part
+4's 0.221 was one reasonable draw from a wide distribution. A random subset's score moves by only ~0.0003, but greedy's path
+diverges. The correction already made for random draws applies to greedy too, so greedy
+and the cheat now run over 8 seeds (3 for the all-candidate variant) and are read as
+distributions. On RPE1 split 204 the same protocol spans 0.096–0.147 across seeds, from
+below the random median (0.100) to above the random max (0.133). Every number in this section is
+re-scored in the analysis env; re-scoring moves a chosen set's MRR by 0.003 on average
+(max 0.012).
+
+**The honest floor is GO facility location, not GO coverage.** Choose genes so that every
+gene has a close GO neighbour among them: greedy facility location on GO Jaccard. It uses
+no signature at all, so it is legal in the blind regime. It reaches 1.23× on K562 and
+1.30× on RPE1, level with greedy on every aux gene (1.24×, 1.26×), which reads 470–850
+real signatures to do the same. Static GO coverage, the floor Framing B used, is 1.11× and
+1.25×. An acquisition method has to beat facility location, not random.
+
+### What this means for the project
+
+- **On the peek task, RL is a real, measured improvement.** It is atlas compression: which
+  of the measured genes best predict the rest. The cleanest RL story is the learned critic
+  used as a control variate for a noisy reward. It has a diagnostic (r 0.17 → 0.26) that
+  explains *why* it works, and it beats greedy 18/18. PPO is the version that transfers to
+  new genes. REINFORCE is the strong per-instance optimiser. Facility location and
+  multi-seed greedy must appear as baselines in any table.
+- **The prospective (blind) version is where the open problem now sits.** RL there only
+  matches a static GO heuristic. The measured obstacle is train/deploy mismatch in
+  sub-problem scale, not a policy that learns nothing. The next experiments are size-matched
+  training sub-problems, training the blind policy on another cell line's full atlas
+  (K562 → RPE1), and gene priors richer than GO.
+  > **Superseded 2026-11-17.** All three were run and none works; the train/deploy-mismatch
+  > diagnosis in this bullet is wrong — the validation advantage it rests on does not
+  > survive size matching, which means it was noise. See "The blind regime" above.
+- Caveats: 3 splits × 3 seeds; one predictor (GO-kNN), so which genes are informative may
+  change with a better predictor; the peek methods read candidate signatures and are not
+  prospective design.
+
+Reproduce with `./submit.sh rlacq`, all CPU: cache 2 min, baselines ≤ 45 min, 15 training
+tasks ≤ 45 min, report 2 min. Outputs go to
+`artifacts/rl_acquire/{report.md,summary.json,records.jsonl}`. Redraw with
+`./submit.sh rlacq_report`.
+
+> **The three "next experiments" listed above have now been run. None of them works —
+> next section.**
+
+---
+
+## The blind regime: three levers, none of them closes it
+
+**Added 2026-11-17.** The section above ended with the blind regime open and named three
+suspects for it: training sub-problems smaller than deployment, a GO-only view of a gene,
+and a training atlas too small to fix the first. One variant each, plus the combination,
+on the identical splits, predictor and report genes — 4 variants × 2 datasets × 3 splits ×
+3 seeds = 72 runs, 0 errors. **All four land on the static floor.**
+
+![RL acquisition](figures/fig15_rl_acquisition.png)
+
+| report MRR ÷ random median | K562 | vs best floor (wins) | RPE1 | vs best floor (wins) |
+|---|---:|---:|---:|---:|
+| GO facility location (static, GO Jaccard) | 1.23× | — | **1.30×** | — |
+| facility location, IDF-weighted GO (static) | **1.24×** | — | 1.24× | — |
+| facility location, GO embedding (static) | 1.19× | — | 1.05× | — |
+| PPO blind, as before (shrunk sub-problems, GO only) | 1.23× | −0.0035 (4/9) | 1.33× | −0.0016 (4/9) |
+| PPO blind, **size-matched** sub-problems | 1.26× | +0.0027 (6/9) | 1.32× | −0.0020 (3/9) |
+| PPO blind, **richer gene priors** | 1.20× | −0.0079 (4/9) | 1.30× | −0.0046 (3/9) |
+| PPO blind, **trained on the other cell line** | 1.21× | −0.0060 (3/9) | 1.31× | −0.0028 (3/9) |
+| PPO blind, other cell line **+ richer priors** | 1.23× | −0.0034 (4/9) | 1.36× | +0.0022 (5/9) |
+
+"Best floor" is the strongest static heuristic on the same split across all three prior
+views — the floor a policy that is *given* those views has to clear. Every one of the ten
+paired comparisons is **statistically indistinguishable from it**: |t| ≤ 1.4 over 9 paired
+runs, win rates 3/9–6/9. The largest blind number anywhere, RPE1 cross-line + rich at
+1.36×, is t = +0.54 with 5/9 wins. That is a coin flip, not a result.
+
+**The scale hypothesis is not merely unconfirmed, it is refuted.** Size matching worked as
+intended — training sub-problems went from 183 candidates / budget 42 to **437 / 100**,
+deployment's own numbers, and the cross-line variant trains at 437/100 with 307 reward and
+799 visible genes, deployment scale on all three sets. The diagnostic that decides it is
+the policy's advantage over facility location **on its own validation sub-problems**,
+i.e. before any transfer:
+
+| val MRR ÷ facility location, at training scale | K562 | RPE1 |
+|---|---:|---:|
+| shrunk sub-problems (as before) | 1.085× | 1.088× |
+| size-matched | **1.028×** | 1.081× |
+| richer priors | 1.100× | 1.107× |
+| other cell line | 1.086× | 1.036× |
+| other cell line + richer priors | 1.104× | 1.042× |
+
+Matching the scale **lowered** it on K562 and left it flat on RPE1. In every configuration
+it sits at 1.03–1.11×. The advantage was never large enough to survive anything — it is not
+being destroyed in transfer, **it was never there**. The earlier reading, that a 5–13%
+validation gain died at deployment scale, was reading noise in a small validation set.
+
+**Richer priors do not help statically either, which is the cleaner statement.** Facility
+location under the IDF-weighted view reaches 1.24× / 1.24× and under the 32-dimension term
+co-occurrence embedding 1.19× / 1.05×, against plain Jaccard's 1.23× / 1.30×. Two different
+richer similarity views, neither better than Jaccard on both lines. The predictor is
+unchanged throughout (GO-kNN on Jaccard), so every number stays comparable; only the
+*policy's* view was enriched. GO similarity was not the binding representation here in the
+way gap 0 suggests it is for the *prediction* problem.
+
+### What this means
+
+- **The peek result is unaffected and remains the project's RL finding.** 1.35–1.59×
+  random, 85 of 90 paired wins over greedy, with the critic diagnostic (r 0.17 → 0.26)
+  explaining why. That is atlas compression, and it stands.
+- **The blind regime should be reported as a measured near-ceiling, not an open
+  engineering problem.** Prior annotation alone appears to carry about **1.2–1.3× random**
+  of acquisition signal, and a classical greedy facility-location heuristic — no learning,
+  no data, seconds to run — already extracts essentially all of it. Five different learned
+  policies, three information settings and two cell lines do not beat it.
+- **The honest way to state the project's result** is therefore a separation: *knowing the
+  candidates' signatures is worth ~1.35–1.59×; prior knowledge alone is worth ~1.23–1.30×,
+  and a 1970s heuristic already gets that.* The gap between them is the value of the
+  measurement, not of the method.
+- The open problem that survives is **not** policy architecture. It is the input: a
+  prospective policy needs a gene representation that predicts *effect*, and GO, IDF-GO and
+  GO co-occurrence all fail to. Sequence, expression and pathway-topology priors are
+  untested here, and gap 0 says the same thing from the prediction side.
+
+### Caveats
+
+- 3 splits × 3 seeds per variant (9 runs), one predictor (GO-kNN), one budget (100 of 437).
+  A negative result at this n rules out effects of the size the peek methods showed
+  (+0.02–0.03 MRR, 100% win rates), not arbitrarily small ones.
+- `ppo_blind_match` needs `act ∪ aux` as its training pool to reach deployment scale, so
+  deployment-candidate signatures enter its training **reward** (never its features). It is
+  the leakier variant and it still does not beat the floor, which only strengthens the
+  negative. `ppo_blind_xline` has no such leak: nothing of the deployment line enters
+  training or checkpoint selection.
+- The `ppo_blind` row's "train scale" prints as `static` in `report.md` because those runs
+  predate the field; its real scale is 183/42 (K562) and 247/57 (RPE1).
+- The two new static floors were added by re-running the baselines with `PJ_RLA_FORCE=1`;
+  all 25 pre-existing rows reproduced exactly, score and chosen set, so no earlier number
+  moved. The generalised facility-location path reproduces `go_facility` under the Jaccard
+  view on all 6 splits.
+
+Reproduce with `PJ_RLA_FORCE=1 ./submit.sh rlacq_base` (the static floors) and
+`PJ_RLA_METHODS="ppo_blind_match ppo_blind_rich ppo_blind_xline ppo_blind_xline_rich"
+./submit.sh rlacq_runs` (~2.5 h, all CPU).
 
 ---
 

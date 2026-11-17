@@ -17,6 +17,8 @@
 #   ./submit.sh genfigs              # redraw only the generalization figures
 #   ./submit.sh rlacq                # RL on the acquisition gap: cache, baselines, training array, report
 #   ./submit.sh rlacq_train          # same, reusing the cache; rlacq_report redraws the report only
+#   ./submit.sh rlacq_runs           # training array + report only (baselines already there)
+#   PJ_RLA_SMOKE=1 ./submit.sh rlacq_smoke   # training array only, 3 iterations: code-path check
 #   FETCH_PDG_CHEMICAL=1 ./submit.sh # also pull the 37 GB chemical tarball
 set -euo pipefail
 
@@ -45,7 +47,7 @@ export PJ_RL_RANDOM_ONLY='${PJ_RL_RANDOM_ONLY:-}'
 EOF
 # RL-acquisition knobs: write ONLY the ones set here, so env/common.sh stays the
 # single source of their defaults (an empty export would override a default).
-for v in PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS PJ_RLA_MAXPAR \
+for v in PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS PJ_RLA_PER_TASK PJ_RLA_MAXPAR \
          PJ_RLA_SMOKE PJ_RLA_FORCE PJ_RLA_PPO_ITERS PJ_RLA_PPO_UNIV PJ_RLA_PPO_GROUP \
          PJ_RLA_PPO_EPOCHS PJ_RLA_PPO_LR PJ_RLA_PPO_ENT PJ_RLA_NVAL PJ_RLA_VAL_EVERY \
          PJ_RLA_PG_ITERS PJ_RLA_CRITIC_UNIV PJ_RLA_CRITIC_EPOCHS; do
@@ -126,7 +128,9 @@ rla_grid() {  # rla_grid train|base -> "<n_tasks> <maxpar>"
     . "$ENVFILE"
     nd=$(wc -w <<<"$PJ_RLA_DATASETS"); ns=$(wc -w <<<"$PJ_RLA_SPLITS")
     nm=$(wc -w <<<"$PJ_RLA_METHODS"); nz=$(wc -w <<<"$PJ_RLA_SEEDS")
-    if [ "$1" = train ]; then echo "$((nd * ns * nm * nz)) $PJ_RLA_MAXPAR"; else echo "$((nd * ns)) 0"; fi )
+    # one array task runs PJ_RLA_PER_TASK grid entries (array tasks count against the QOS submit limit)
+    n=$((nd * ns * nm * nz)); per=$PJ_RLA_PER_TASK
+    if [ "$1" = train ]; then echo "$(((n + per - 1) / per)) $PJ_RLA_MAXPAR"; else echo "$((nd * ns)) 0"; fi )
 }
 
 if [ "$STAGE" = "rlcache" ]; then
@@ -135,8 +139,9 @@ if [ "$STAGE" = "rlcache" ]; then
   printf '  %-10s %s\n' rlcache "${ID[rlcache]}"
 fi
 
-if [ "$STAGE" = "rlacq" ] || [ "$STAGE" = "rlacq_train" ]; then
-  # RL on the acquisition gap. rlacq builds the cache first; rlacq_train reuses it.
+if [ "$STAGE" = "rlacq" ] || [ "$STAGE" = "rlacq_train" ] || [ "$STAGE" = "rlacq_runs" ]; then
+  # RL on the acquisition gap. rlacq builds the cache first; rlacq_train reuses it;
+  # rlacq_runs submits only training + report (baselines already done or running).
   # Baselines and training are siblings (both only need the cache); the report
   # reads whatever finished (afterany) and says what is missing.
   read -r NT MAXPAR < <(rla_grid train)
@@ -146,11 +151,35 @@ if [ "$STAGE" = "rlacq" ] || [ "$STAGE" = "rlacq_train" ]; then
     ID[rlcache]=$(sub "$J/40_rl_cache.sbatch")
     DEP=("--dependency=afterok:${ID[rlcache]}")
   fi
-  ID[rlbase]=$(sub "$J/41_rl_baselines.sbatch" ${DEP[@]+"${DEP[@]}"} "--array=0-$((NB - 1))")
+  AFTER=""
+  if [ "$STAGE" != "rlacq_runs" ]; then
+    ID[rlbase]=$(sub "$J/41_rl_baselines.sbatch" ${DEP[@]+"${DEP[@]}"} "--array=0-$((NB - 1))")
+    AFTER=":${ID[rlbase]}"
+  fi
   ID[rltrain]=$(sub "$J/42_rl_train.sbatch" ${DEP[@]+"${DEP[@]}"} "--array=0-$((NT - 1))%${MAXPAR}")
-  ID[rlreport]=$(sub "$J/43_rl_report.sbatch" "--dependency=afterany:${ID[rlbase]}:${ID[rltrain]}")
-  printf '  %-10s %s\n' rlcache "${ID[rlcache]:-<reused>}" rlbase "${ID[rlbase]} (${NB} tasks)" \
+  ID[rlreport]=$(sub "$J/43_rl_report.sbatch" "--dependency=afterany${AFTER}:${ID[rltrain]}")
+  printf '  %-10s %s\n' rlcache "${ID[rlcache]:-<reused>}" rlbase "${ID[rlbase]:-<not submitted>}" \
     rltrain "${ID[rltrain]} (${NT} tasks, ${MAXPAR} at a time)" rlreport "${ID[rlreport]}"
+fi
+
+if [ "$STAGE" = "rlacq_base" ]; then
+  # Baselines array only. Needed on its own because PJ_RLA_FORCE is read by BOTH the
+  # baselines and the training job, so re-running the baselines to add a strategy
+  # must not also redo every finished RL run. The baselines are deterministic (fixed
+  # seeds), so a forced re-run reproduces the existing rows and adds the new ones.
+  read -r NB _ < <(rla_grid base)
+  ID[rlbase]=$(sub "$J/41_rl_baselines.sbatch" "--array=0-$((NB - 1))")
+  printf '  %-10s %s\n' rlbase "${ID[rlbase]} (${NB} tasks)"
+fi
+
+if [ "$STAGE" = "rlacq_smoke" ]; then
+  # Training array only, no report: a cheap end-to-end check of the RL code paths
+  # (and, since PJ_RLA_SMOKE shrinks only the ITERATION COUNT and not the
+  # sub-problems, a measurement of per-iteration cost at real scale, which is how
+  # the real run's --time is sized). Results land in artifacts/rl_acquire_smoke/.
+  read -r NT MAXPAR < <(rla_grid train)
+  ID[rltrain]=$(sub "$J/42_rl_train.sbatch" "--array=0-$((NT - 1))%${MAXPAR}")
+  printf '  %-10s %s\n' rltrain "${ID[rltrain]} (${NT} tasks, ${MAXPAR} at a time)"
 fi
 
 if [ "$STAGE" = "rlacq_report" ]; then

@@ -27,6 +27,19 @@ predictor and report genes as GAPS part 4:
                 noisy empirical gain toward it (critic_shrink).
                 Hypothesis tested: "it is the reward estimate".
 
+Added 2026-11-17, after the first round left the blind regime open (PPO there only
+matched a static GO facility-location heuristic). Three suspects, one variant each
+and the combination, all deployed on the identical splits (see BLIND_VARIANTS):
+  ppo_blind_match       deployment-scale training sub-problems (437 candidates,
+                        budget 100) instead of proportionally shrunk ones (~190/43).
+  ppo_blind_xline       trained on the OTHER cell line's whole atlas: deployment
+                        scale, and nothing of the deployment line enters training or
+                        model selection.
+  ppo_blind_rich        richer prior view of a gene than GO Jaccard (IDF-weighted
+                        term cosine + a term co-occurrence embedding). The PREDICTOR
+                        is unchanged, so every MRR stays comparable.
+  ppo_blind_xline_rich  both.
+
 Information regimes, i.e. what a policy may look at:
   peek   every non-report signature, including a candidate's before it is chosen.
          GAPS part 4's greedy used exactly this (it scores a candidate by inserting
@@ -75,7 +88,27 @@ N_RAND = 100             # random baseline is a distribution, never one draw
 N_GREEDY_SEEDS = 8       # ... and so is a greedy run (see run_baselines)
 N_GREEDY_ALL_SEEDS = 3
 DATASETS = ("replogle_k562_essential", "replogle_rpe1_essential")
-METHODS = ("pg_tab", "pg_tab_boot", "ppo_peek", "ppo_blind", "critic")
+METHODS = ("pg_tab", "pg_tab_boot", "ppo_peek", "ppo_blind", "critic",
+           "ppo_blind_match", "ppo_blind_rich", "ppo_blind_xline", "ppo_blind_xline_rich")
+OTHER = {"replogle_k562_essential": "replogle_rpe1_essential",
+         "replogle_rpe1_essential": "replogle_k562_essential"}
+
+# The blind regime was the open problem: PPO there only matched static GO facility
+# location. GAPS.md named three suspects -- sub-problem scale, where the policy is
+# trained, and a GO-only view of a gene. One variant each, plus the combination.
+#   pool  "aux"   the visible atlas of THIS line (the honest default; pool-limited)
+#         "all"   act + aux of this line: big enough to match deployment scale, at
+#                 the cost that candidate signatures enter the training REWARD (never
+#                 the features). Isolates scale with no cross-line shift.
+#         "other" the other cell line's entire atlas: deployment scale AND nothing of
+#                 this line is touched by training or model selection.
+BLIND_VARIANTS = {
+    "ppo_blind": {"pool": "aux", "match": False, "rich": False},
+    "ppo_blind_match": {"pool": "all", "match": True, "rich": False},
+    "ppo_blind_rich": {"pool": "aux", "match": False, "rich": True},
+    "ppo_blind_xline": {"pool": "other", "match": True, "rich": False},
+    "ppo_blind_xline_rich": {"pool": "other", "match": True, "rich": True},
+}
 
 
 def env_list(name, default, typ=str):
@@ -141,6 +174,38 @@ class World:
         order = np.argsort(self.owner, kind="stable")
         b = np.searchsorted(self.owner[order], np.arange(self.K + 1))
         self.q_of = [order[b[i]:b[i + 1]] for i in range(self.K)]
+        self._rich = None
+
+    def rich(self):
+        """Two prior-only similarity views richer than GO Jaccard, built once.
+
+        Jaccard weights every term equally and sees only DIRECT overlap, so two
+        genes annotated to different terms of the same process are as far apart as
+        two unrelated genes. These two views fix one limitation each:
+          idf   cosine on IDF-weighted term vectors -- a rare term counts for more
+                than a term half the genome carries.
+          emb   cosine in the top-32 SVD subspace of that weighted matrix -- term
+                CO-OCCURRENCE, so related-but-non-overlapping annotations are near.
+        Both are functions of F alone, so they are legal in the blind regime: they
+        say nothing about any candidate's signature. The PREDICTOR still uses plain
+        Jaccard kNN, exactly as every number in GAPS.md does; only the policy's view
+        of the candidates is richer. That is the point -- a policy that can see
+        structure the predictor cannot is what lets it pick genes the predictor will
+        be able to use."""
+        if self._rich is None:
+            F = self.F
+            idf = np.log(self.K / np.maximum(F.sum(0), 1.0)).astype(np.float32)
+            Fw = F * idf
+            U = RH.unit(Fw)
+            Sidf = (U @ U.T).astype(np.float32)
+            Fc = (Fw - Fw.mean(0)).astype(np.float64)
+            r = max(1, min(32, min(Fc.shape) - 1))
+            Us, sv, _ = np.linalg.svd(Fc, full_matrices=False)
+            E = RH.unit((Us[:, :r] * sv[:r]).astype(np.float32))
+            self._rich = {"idf": Sidf, "emb": (E @ E.T).astype(np.float32),
+                          "spec": ((F @ idf) / np.maximum(F.sum(1), 1.0)).astype(np.float32)}
+            log(f"  [{self.name}] rich views: idf + emb(r={r}) over {F.shape[1]} GO terms")
+        return self._rich
 
 
 def split_of(K, seed):
@@ -237,12 +302,15 @@ GO_FEATS = ["deg", "centrality", "fl_gain", "knn_entry", "uncovered", "go_redund
 PEEK_FEATS = ["lognorm", "coherence", "typicality", "sig_redund"]
 NB_FEATS = ["nb_lognorm", "nb_agree", "nb_mass"]
 BLIND_FEATS = ["pred_redund"]
+# prior-only, blind-legal: the same coverage/redundancy questions asked under the two
+# richer similarity views of World.rich(), plus how specific the gene's annotation is
+RICH_FEATS = ["idf_fl_gain", "idf_redund", "emb_fl_gain", "emb_redund", "spec"]
 CTX_FEATS = ["spent", "frac_uncov", "mean_cov", "round"]
 
 
-def feature_names(regime):
+def feature_names(regime, rich=False):
     body = GO_FEATS + (PEEK_FEATS + NB_FEATS if regime == "peek" else NB_FEATS + BLIND_FEATS)
-    return body + CTX_FEATS
+    return body + (RICH_FEATS if rich else []) + CTX_FEATS
 
 
 class FeatureState:
@@ -263,8 +331,9 @@ class FeatureState:
     neighbourhood features read only the visible atlas and genes already measured,
     refreshed at the start of each round (a batch of measurements comes back)."""
 
-    def __init__(self, W, act, vis, regime, B, rng=None, t_max=None):
+    def __init__(self, W, act, vis, regime, B, rng=None, t_max=None, rich=False):
         self.W, self.A, self.vis, self.regime, self.B = W, np.asarray(act), np.asarray(vis), regime, B
+        self.rich = rich
         T = np.concatenate([self.A, self.vis])
         if t_max is not None and T.size > t_max:
             T = rng.choice(T, size=t_max, replace=False)
@@ -282,6 +351,17 @@ class FeatureState:
         self.chosen = []
         self.round = 0
         self.static = {"deg": W.deg[self.A], "centrality": JTA.mean(0)}
+        if rich:
+            R = W.rich()
+            self._R = R
+            self.rich_TA, self.rich_s, self.rich_red = {}, {}, {}
+            for v in ("idf", "emb"):
+                M = R[v][np.ix_(T, self.A)].copy()
+                M[T[:, None] == self.A[None, :]] = 0.0      # a gene is not its own neighbour
+                self.rich_TA[v] = M
+                self.rich_s[v] = np.zeros(T.size, np.float32)
+                self.rich_red[v] = np.zeros(nA, np.float32)
+            self.static["spec"] = R["spec"][self.A]
         if regime == "peek":
             V = np.concatenate([self.A, self.vis])
             self.static["lognorm"] = W.lognorm[self.A]
@@ -355,6 +435,12 @@ class FeatureState:
             cols += [self.nb[k][av] for k in NB_FEATS]
         else:
             cols += [self.nb[k][av] for k in NB_FEATS + BLIND_FEATS]
+        if self.rich:
+            for v in ("idf", "emb"):
+                Gv = self.rich_TA[v][:, av]
+                cols += [(tm[:, None] * np.maximum(Gv - self.rich_s[v][:, None], 0)).sum(0) / den,
+                         self.rich_red[v][av]]
+            cols.append(self.static["spec"][av])
         X = np.stack(cols, 1).astype(np.float32)
         X = (X - X.mean(0)) / (X.std(0) + 1e-6)
         ctx = np.array([len(self.chosen) / self.B, unc.sum() / den, (tm * self.s).sum() / den,
@@ -375,23 +461,47 @@ class FeatureState:
         tk.sort(1)
         self.topk = tk[:, 1:]
         self.go_red = np.maximum(self.go_red, self.W.JJ[self.A, g])
+        if self.rich:
+            for v in ("idf", "emb"):
+                self.rich_s[v] = np.maximum(self.rich_s[v], self.rich_TA[v][:, a])
+                self.rich_red[v] = np.maximum(self.rich_red[v], self._R[v][self.A, g])
         if self.regime == "peek":
             self.sig_red = np.maximum(self.sig_red, self.W.CC[self.A, g])
 
 
 # =================================================================== episodes
-def make_sampler(dep, regime):
+def make_sampler(dep, regime, pool=None, na_target=None):
     """Training sub-problems in the deployment's proportions (act : vis : hidden
     reward), each fraction jittered +/-15%, budget scaled with the candidate count.
-    peek draws from act+aux (the same signatures greedy may read); blind from aux."""
+    peek draws from act+aux (the same signatures greedy may read); blind from aux.
+
+    `na_target` turns on SIZE MATCHING, the lever GAPS.md names for the blind regime.
+    With it None (the default, and what every result before 2026-11-17 used), a
+    sub-problem is a scaled-down copy of deployment: its candidate count is a
+    fraction of the pool, so on K562 the blind policy trains on ~190 candidates with
+    budget ~43 and is then deployed on 437 with budget 100. The ratio matches; the
+    absolute scale does not, and k in the kNN is fixed at 10, so the redundancy a
+    gene has to avoid is a different quantity at the two scales. With na_target set,
+    the candidate slate and the budget are deployment's own and the remaining genes
+    keep deployment's reward : visible ratio -- which only fits if the pool is big
+    enough, hence `pool` (the other cell line's whole atlas is the clean way to get
+    one; see BLIND_VARIANTS)."""
     n = np.array([dep["act"].size, dep["aux"].size, dep["rep"].size], float)
-    pool = np.concatenate([dep["act"], dep["aux"]]) if regime == "peek" else dep["aux"].copy()
+    if pool is None:
+        pool = np.concatenate([dep["act"], dep["aux"]]) if regime == "peek" else dep["aux"].copy()
+    pool = np.asarray(pool)
 
     def sample(rng):
         p = rng.permutation(pool)
         fr = rng.uniform(0.85, 1.15, 3) * n
         fr = fr / fr.sum()
-        na, nr = int(round(fr[0] * p.size)), int(round(fr[2] * p.size))
+        if na_target is None:
+            na, nr = int(round(fr[0] * p.size)), int(round(fr[2] * p.size))
+        else:
+            # never take so many candidates that nothing is left to be rewarded on
+            na = int(min(na_target, 0.8 * p.size))
+            rest = p.size - na
+            nr = int(np.clip(round(rest * n[2] / (n[1] + n[2])), 8, max(8, rest - 8)))
         B = max(8, int(round(B_DEPLOY * na / n[0])))
         return {"act": np.sort(p[:na]), "rew": np.sort(p[na:na + nr]),
                 "vis": np.sort(p[na + nr:]), "B": B}
@@ -402,8 +512,9 @@ def deploy_episode(dep):
     return {"act": dep["act"], "vis": dep["aux"], "rew": None, "B": B_DEPLOY}
 
 
-def rollout(W, ep, regime, logit_fn, rng, mode="sample", rew=None, record=False, t_max=None):
-    fs = FeatureState(W, ep["act"], ep["vis"], regime, ep["B"], rng, t_max)
+def rollout(W, ep, regime, logit_fn, rng, mode="sample", rew=None, record=False, t_max=None,
+            rich=False):
+    fs = FeatureState(W, ep["act"], ep["vis"], regime, ep["B"], rng, t_max, rich)
     mr, rec = [], []
     for rd, b in enumerate(round_sizes(ep["B"])):
         fs.begin_round(rd)
@@ -468,6 +579,38 @@ def go_facility(W, dep, B):
     return fs.chosen
 
 
+def facility(W, dep, B, view=None):
+    """Greedy facility location on a prior similarity matrix: choose genes so that
+    every gene (candidates + visible atlas) has a close CHOSEN neighbour. Static,
+    reads no signature, so it is legal in the blind regime.
+
+    `view=None` is GO Jaccard -- the floor GAPS.md already reports, and this path is
+    checked against go_facility()'s own result. The point of the other two views is
+    fairness: a policy handed the IDF and embedding views as features (RICH_FEATS)
+    must be compared against the best STATIC use of those same views, not only
+    against the Jaccard one, or 'richer priors help' would just mean 'the floor was
+    computed on a weaker similarity'."""
+    A = dep["act"]
+    T = np.concatenate([dep["act"], dep["aux"]])
+    S = W.JJ if view is None else W.rich()[view]
+    M = S[np.ix_(T, A)].copy()
+    M[T[:, None] == A[None, :]] = 0.0           # a gene is not its own neighbour
+    s = np.zeros(T.size, np.float32)
+    tm = np.ones(T.size, np.float32)
+    avail = np.ones(A.size, bool)
+    chosen = []
+    for _ in range(B):
+        av = np.flatnonzero(avail)
+        g = (tm[:, None] * np.maximum(M[:, av] - s[:, None], 0)).sum(0)
+        k = int(av[int(np.argmax(g))])
+        avail[k] = False
+        chosen.append(int(A[k]))
+        r = np.flatnonzero(T == A[k])
+        tm[r] = 0.0
+        s = np.maximum(s, M[:, k])
+    return chosen
+
+
 def random_dist(rep_fn, act, B, seed=9100, n=N_RAND):
     srng = np.random.default_rng(seed)
     v = [rep_fn(act[srng.choice(act.size, size=B, replace=False)]) for _ in range(n)]
@@ -523,7 +666,17 @@ def run_baselines(W, split_seed, out):
     t0 = time.time()
     put("go_coverage", go_coverage(W, dep["act"], B_DEPLOY), t0=t0)
     t0 = time.time()
-    put("go_facility", go_facility(W, dep, B_DEPLOY), t0=t0)
+    ch_fac = go_facility(W, dep, B_DEPLOY)
+    put("go_facility", ch_fac, t0=t0)
+    # The same static heuristic under the two richer prior views. A policy handed
+    # those views as features (RICH_FEATS) has to beat their best STATIC use, not
+    # just the Jaccard one, or "richer priors help" would only mean "the floor was
+    # measured on a weaker similarity".
+    for v in ("idf", "emb"):
+        t0 = time.time()
+        put(f"go_facility_{v}", facility(W, dep, B_DEPLOY, v), t0=t0)
+    put("facility_path_check",
+        extra={"jaccard_view_matches_go_facility": facility(W, dep, B_DEPLOY) == ch_fac})
     rs_aux, rs_rep = RewardSet(W, dep["aux"]), RewardSet(W, dep["rep"])
     # A single greedy run is itself ONE DRAW: its 120 sampled candidates, its random
     # first pick, and the kNN's arbitrary tie-breaking among equal GO Jaccards all
@@ -599,26 +752,48 @@ def seg_logp(torch, net, X, seg, nseg, act_rows):
 
 
 # ========================================================================= PPO
-def train_ppo(W, dep, regime, seed, n_threads, curve_path):
+def train_ppo(W, dep, regime, seed, n_threads, curve_path, train_world=None, pool=None,
+              na_target=None, rich=False):
+    """Train on `train_world` (default: the deployment world W), deploy on W.
+
+    Everything that selects -- the sub-problem sampler, the validation sub-problems,
+    the checkpoint -- lives entirely in the training world. W is touched only to roll
+    the chosen policy out on the real deployment split and to score it, which is the
+    reported number. So with train_world set to the OTHER cell line, no part of
+    training or model selection has seen this line's candidates, their signatures or
+    its report genes -- the cleanest form of the generalisation claim, and the only
+    way to get deployment-scale training sub-problems on K562, whose own visible
+    atlas (473 genes) cannot spare 437 of them as candidates."""
     torch = _torch(n_threads)
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
     C = CFG
-    d = len(feature_names(regime))
+    WT = train_world if train_world is not None else W
+    d = len(feature_names(regime, rich))
     net = make_mlp(torch, d, C["ppo_hidden"])
     opt = torch.optim.Adam(net.parameters(), lr=C["ppo_lr"])
-    sampler = make_sampler(dep, regime)
+    sampler = make_sampler(dep, regime, pool, na_target)
     # validation sub-problems: fixed across seeds, drawn the same way as training ones
     val = [sampler(np.random.default_rng(770_000 + i)) for i in range(C["n_val"])]
-    val_rs = [RewardSet(W, ep["rew"]) for ep in val]
+    val_rs = [RewardSet(WT, ep["rew"]) for ep in val]
     rep_fn = Reporter(W, dep["rep"], dep["act"])
     dep_ep = deploy_episode(dep)
+    probe = sampler(np.random.default_rng(12345))      # a throwaway draw, to record the scale
+    scale = {"train_dataset": WT.name, "pool": int(np.asarray(
+        pool if pool is not None else (dep["aux"] if regime == "blind" else
+                                       np.concatenate([dep["act"], dep["aux"]]))).size),
+        "n_cand": int(probe["act"].size), "budget": int(probe["B"]),
+        "n_reward": int(probe["rew"].size), "n_visible": int(probe["vis"].size),
+        "deploy_n_cand": int(dep["act"].size), "deploy_budget": B_DEPLOY,
+        "size_matched": na_target is not None, "rich": bool(rich)}
+    log(f"  train scale: {scale}")
 
     def fl_logits(X):                     # facility-location reference on the same episodes
         return X[:, GO_FEATS.index("fl_gain")]
 
     def val_score(fn):
-        return float(np.mean([rollout(W, ep, regime, fn, np.random.default_rng(0), "greedy", rs)[1][-1]
+        return float(np.mean([rollout(WT, ep, regime, fn, np.random.default_rng(0), "greedy", rs,
+                                      rich=rich)[1][-1]
                               for ep, rs in zip(val, val_rs)]))
 
     vr = np.random.default_rng(1)
@@ -633,7 +808,7 @@ def train_ppo(W, dep, regime, seed, n_threads, curve_path):
     def checkpoint(it):
         fn = export_np(net)
         v = val_score(fn)
-        ch = rollout(W, dep_ep, regime, fn, np.random.default_rng(0), "greedy")[0]
+        ch = rollout(W, dep_ep, regime, fn, np.random.default_rng(0), "greedy", rich=rich)[0]
         r = rep_fn(ch)
         row = {"iter": it, "val_mrr": v, "rep_mrr": r["mrr"], "rep_top1": r["top1"], **val_ref}
         curve.append(row)
@@ -652,10 +827,10 @@ def train_ppo(W, dep, regime, seed, n_threads, curve_path):
         Xs, ks, advs, finals, ep_dec = [], [], [], [], []
         for _ in range(C["ppo_univ"]):
             ep = sampler(rng)
-            rs = RewardSet(W, ep["rew"])
+            rs = RewardSet(WT, ep["rew"])
             M, recs = [], []
             for _g in range(C["ppo_group"]):
-                _, mr, rec = rollout(W, ep, regime, fn, rng, "sample", rs, True, C["t_max"])
+                _, mr, rec = rollout(WT, ep, regime, fn, rng, "sample", rs, True, C["t_max"], rich)
                 M.append(mr)
                 recs.append(rec)
             M = np.array(M)
@@ -709,10 +884,11 @@ def train_ppo(W, dep, regime, seed, n_threads, curve_path):
     last = curve[-1]
     np.savez(curve_path.replace(".curve.jsonl", ".policy.npz"),
              **{k: v.numpy() for k, v in best["state"].items()},
-             features=np.array(feature_names(regime)))
+             features=np.array(feature_names(regime, rich)))
     return {"chosen": best["chosen"], "rep": best["rep"], "best_iter": best["iter"],
             "best_val": best["val"], "val_ref": val_ref, "last_rep_mrr": last["rep_mrr"],
-            "last_val_mrr": last["val_mrr"], "features": feature_names(regime)}
+            "last_val_mrr": last["val_mrr"], "features": feature_names(regime, rich),
+            "train_scale": scale}
 
 
 # ================================================================ tabular PG
@@ -962,9 +1138,23 @@ def main():
         if me in ("pg_tab", "pg_tab_boot"):
             r = train_pg_tab(W, dep, seed, me == "pg_tab_boot", curve)
             res = [dict(base, method=me, regime="peek", **{f"rep_{k}": v for k, v in r.pop("rep").items()}, **r)]
-        elif me in ("ppo_peek", "ppo_blind"):
-            regime = me.split("_")[1]
-            r = train_ppo(W, dep, regime, seed, a.threads, curve)
+        elif me == "ppo_peek" or me in BLIND_VARIANTS:
+            regime = "peek" if me == "ppo_peek" else "blind"
+            kw = {}
+            if me in BLIND_VARIANTS:
+                v = BLIND_VARIANTS[me]
+                kw["rich"] = v["rich"]
+                if v["pool"] == "all":
+                    kw["pool"] = np.concatenate([dep["act"], dep["aux"]])
+                elif v["pool"] == "other":
+                    WO = world(OTHER[ds])
+                    if WO is None:
+                        return 0          # a failed gate, not a crash (see CLAUDE.md)
+                    kw["train_world"] = WO
+                    kw["pool"] = np.arange(WO.K)
+                if v["match"]:
+                    kw["na_target"] = int(dep["act"].size)
+            r = train_ppo(W, dep, regime, seed, a.threads, curve, **kw)
             res = [dict(base, method=me, regime=regime, **{f"rep_{k}": v for k, v in r.pop("rep").items()}, **r)]
         elif me == "critic":
             r = train_critic(W, dep, seed, a.threads, curve)
