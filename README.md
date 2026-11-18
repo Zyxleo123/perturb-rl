@@ -34,6 +34,9 @@ cd /zfsauton2/home/yixiz/10703_pj
 ./submit.sh rlacq_runs   # training array + report only (baselines already there)
 ./submit.sh rlacq_report # redraw the RL table/figures from saved runs (cheap)
 PJ_RLA_SMOKE=1 ./submit.sh rlacq_smoke   # 3-iteration code-path check, no report
+./submit.sh related      # published methods on the RL task: fetch IterPert + kernels -> priors -> array -> report
+./submit.sh related_runs # array + report only (code, kernels and priors already there)
+PJ_REL_SMOKE=1 PJ_RLA_SPLITS=4 PJ_REL_SEEDS=0 ./submit.sh related_smoke   # every method once, 300 reward evals
 squeue -u $USER -o '%.8i %.9P %.16j %.8T %.10M %R'
 ```
 
@@ -122,6 +125,7 @@ GPU in this pool (sm_70 v100 → sm_90 h200).
 | `11_fetch_gears_data` | cpu | perturb-seq datasets + aux + official oracle |
 | `12_fetch_pdgrapher_data` | cpu | PDGrapher splits + genetic torch_data |
 | `13_build_torch_env` | cpu | build `pertrl` via uv; always exits 0, writes a status file |
+| `14_fetch_related` | cpu | clone IterPert + bmdal_reg (SHAs in `artifacts/code_provenance_related.json`), IterPert's prior kernels (MD5-checked) |
 | `12b_repair_pdgrapher` | cpu | re-extract + verify every `.pt` member |
 | `20_profile` | cpu | dataset stats + identifiability → artifacts |
 | `21_oracle_probe` | legacy (1 GPU) | GEARS vs trivial baselines, top-20 DE genes |
@@ -133,7 +137,9 @@ GPU in this pool (sm_70 v100 → sm_90 h200).
 | `40_rl_cache` | cpu | cache the acquisition-MDP inputs; gate: reproduces GAPS part 4's random median |
 | `41_rl_baselines` | cpu, array | random x100, GO coverage, facility location (3 prior views), greedy and cheat over seeds |
 | `42_rl_train` | cpu, array | RL runs: REINFORCE (per-gene logits), PPO feature policy (peek/blind + 4 blind variants), learned critic |
-| `43_rl_report` | cpu | re-score every chosen set in GAPS's env, table, fig15-fig16 |
+| `43_rl_report` | cpu | re-score every chosen set in GAPS's env, table, fig15-fig17 |
+| `44_related_prep` | cpu | IterPert's priors re-expressed on our candidates (numpy-only unpickler, kernel = feat featᵀ checked) |
+| `45_related_run` | cpu, array | IterPert + its AL benchmark through IterPert's own code (blind); data valuation + exemplars (peek) |
 | `30_figures` | cpu | aggregate figures, drawn from artifacts |
 | `31_case_studies` | cpu | named individual perturbations rather than metrics |
 | `33_generalization_figures` | cpu | redraw fig13-fig14 from `artifacts/generalization/` |
@@ -158,6 +164,7 @@ GPU in this pool (sm_70 v100 → sm_90 h200).
 | **`fig14_context_transfer`** | **few-shot cross-line transfer + is it even the same effect** |
 | **`fig15_rl_acquisition`** | **RL vs greedy vs facility location on gene acquisition, per split x seed; the five blind variants sit on the static floor** |
 | **`fig16_rl_curves`** | **PPO learning curves: validation vs facility location, report set (diagnostic)** |
+| **`fig17_related_work`** | **published acquisition methods (IterPert, Core-Set, BALD, BADGE, LCMD, TypiClust, Data Shapley, ...) beside our RL, same task** |
 
 `fig10`–`fig12` are case studies: named perturbations, with the selection rule printed on
 every panel and representative cases picked by **median** rank rather than cherry-picked.

@@ -19,6 +19,10 @@
 #   ./submit.sh rlacq_train          # same, reusing the cache; rlacq_report redraws the report only
 #   ./submit.sh rlacq_runs           # training array + report only (baselines already there)
 #   PJ_RLA_SMOKE=1 ./submit.sh rlacq_smoke   # training array only, 3 iterations: code-path check
+#   ./submit.sh related              # published methods on the RL task: fetch, priors, array, report
+#   ./submit.sh related_runs         # same, reusing the fetched code/kernels and aligned priors
+#   ./submit.sh related_fetch        # fetch + prior alignment only
+#   PJ_REL_SMOKE=1 ./submit.sh related_smoke  # array only, 300 reward evaluations, separate output dir
 #   FETCH_PDG_CHEMICAL=1 ./submit.sh # also pull the 37 GB chemical tarball
 set -euo pipefail
 
@@ -50,7 +54,8 @@ EOF
 for v in PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS PJ_RLA_PER_TASK PJ_RLA_MAXPAR \
          PJ_RLA_SMOKE PJ_RLA_FORCE PJ_RLA_PPO_ITERS PJ_RLA_PPO_UNIV PJ_RLA_PPO_GROUP \
          PJ_RLA_PPO_EPOCHS PJ_RLA_PPO_LR PJ_RLA_PPO_ENT PJ_RLA_NVAL PJ_RLA_VAL_EVERY \
-         PJ_RLA_PG_ITERS PJ_RLA_CRITIC_UNIV PJ_RLA_CRITIC_EPOCHS; do
+         PJ_RLA_PG_ITERS PJ_RLA_CRITIC_UNIV PJ_RLA_CRITIC_EPOCHS \
+         PJ_REL_METHODS PJ_REL_SEEDS PJ_REL_PER_TASK PJ_REL_MAXPAR PJ_REL_NEVAL PJ_REL_SMOKE PJ_REL_FORCE; do
   if [ -n "${!v:-}" ]; then printf "export %s='%s'\n" "$v" "${!v}" >> "$ENVFILE"; fi
 done
 
@@ -180,6 +185,47 @@ if [ "$STAGE" = "rlacq_smoke" ]; then
   read -r NT MAXPAR < <(rla_grid train)
   ID[rltrain]=$(sub "$J/42_rl_train.sbatch" "--array=0-$((NT - 1))%${MAXPAR}")
   printf '  %-10s %s\n' rltrain "${ID[rltrain]} (${NT} tasks, ${MAXPAR} at a time)"
+fi
+
+# Related work on the RL acquisition task (scripts/related_work.py). Array size from the
+# same defaults + overrides the job sees, like rla_grid.
+rel_grid() {  # -> "<n_tasks> <maxpar>"
+  ( set +u
+    # shellcheck disable=SC1091
+    . "$PJ_HOME/env/common.sh"
+    # shellcheck disable=SC1090
+    . "$ENVFILE"
+    n=$(( $(wc -w <<<"$PJ_RLA_DATASETS") * $(wc -w <<<"$PJ_RLA_SPLITS") \
+        * $(wc -w <<<"$PJ_REL_METHODS") * $(wc -w <<<"$PJ_REL_SEEDS") ))
+    echo "$(((n + PJ_REL_PER_TASK - 1) / PJ_REL_PER_TASK)) $PJ_REL_MAXPAR" )
+}
+
+if [ "$STAGE" = "related" ] || [ "$STAGE" = "related_runs" ] || [ "$STAGE" = "related_smoke" ]; then
+  # related:       fetch code + IterPert kernels -> align priors -> run array -> report
+  # related_runs:  run array -> report (fetch and priors already there)
+  # related_smoke: run array only, PJ_REL_SMOKE=1 recommended (300 reward evaluations,
+  #                results to artifacts/rl_acquire/related_smoke/, never read by the report)
+  # The report runs afterany so it prints partial results and lists failed runs.
+  read -r NT MAXPAR < <(rel_grid)
+  DEP=()
+  if [ "$STAGE" = "related" ]; then
+    ID[relfetch]=$(sub "$J/14_fetch_related.sbatch")
+    ID[relprep]=$(sub "$J/44_related_prep.sbatch" "--dependency=afterok:${ID[relfetch]}")
+    DEP=("--dependency=afterok:${ID[relprep]}")
+  fi
+  ID[relrun]=$(sub "$J/45_related_run.sbatch" ${DEP[@]+"${DEP[@]}"} "--array=0-$((NT - 1))%${MAXPAR}")
+  if [ "$STAGE" != "related_smoke" ]; then
+    ID[rlreport]=$(sub "$J/43_rl_report.sbatch" "--dependency=afterany:${ID[relrun]}")
+  fi
+  printf '  %-10s %s\n' relfetch "${ID[relfetch]:-<reused>}" relprep "${ID[relprep]:-<reused>}" \
+    relrun "${ID[relrun]} (${NT} tasks, ${MAXPAR} at a time)" rlreport "${ID[rlreport]:-<not submitted>}"
+fi
+
+if [ "$STAGE" = "related_fetch" ]; then
+  # fetch + prior alignment only
+  ID[relfetch]=$(sub "$J/14_fetch_related.sbatch")
+  ID[relprep]=$(sub "$J/44_related_prep.sbatch" "--dependency=afterok:${ID[relfetch]}")
+  printf '  %-10s %s\n' relfetch "${ID[relfetch]}" relprep "${ID[relprep]}"
 fi
 
 if [ "$STAGE" = "rlacq_report" ]; then

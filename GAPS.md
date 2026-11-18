@@ -40,6 +40,19 @@ lost in transfer. The usable statement is a separation — *seeing candidate sig
 worth 1.35–1.59×; prior knowledge alone is worth 1.23–1.30×, and a classical
 facility-location heuristic already extracts all of it.* See "The blind regime" below.
 
+**Published methods, re-run on the identical task, leave both conclusions standing (added
+2026-11-18).** IterPert (RECOMB 2024: sequential design of Perturb-seq screens, evaluated
+on this same K562 screen) and the eight active-learning methods it was benchmarked
+against, run through IterPert's own code, all land significantly **below** the static GO
+facility floor: 0.99–1.18× random against 1.23–1.30×, with IterPert itself at 1.02× / 1.09×.
+A clean 2×2 shows why. IterPert's selection rule (k-centre) costs 0.09–0.28× against
+facility location. Its eight multimodal priors (protein language model, text, network,
+imaging screens, the other line's Perturb-seq) are worth nothing over GO Jaccard under
+either rule. In the peek regime, data valuation (Data Shapley, Banzhaf, datamodels) with
+REINFORCE's budget of reward evaluations reaches 1.22–1.31× / 1.43–1.51×. That beats
+greedy, but trails the RL methods' 1.35–1.38× / 1.54–1.59×. See "Related work on the same
+task" below.
+
 The reward oracle, not the generator, is what limits this project. On Norman, a
 parameter-free nearest-centroid match recovers the correct perturbation **86.6%** of the
 time from a 128-cell target, while ranking the same 230 candidates by GEARS-predicted
@@ -527,6 +540,174 @@ way gap 0 suggests it is for the *prediction* problem.
 Reproduce with `PJ_RLA_FORCE=1 ./submit.sh rlacq_base` (the static floors) and
 `PJ_RLA_METHODS="ppo_blind_match ppo_blind_rich ppo_blind_xline ppo_blind_xline_rich"
 ./submit.sh rlacq_runs` (~2.5 h, all CPU).
+
+---
+
+## Related work on the same task
+
+**Added 2026-11-18.** Every comparison above is against baselines we wrote. This section
+runs the published methods for this problem on the **identical task**: the same splits,
+the same budget (100 of 437, spent in 4 rounds of 25), the same GO-kNN predictor and the
+same report genes. Every chosen set is re-scored by `rl_report.py` beside every RL run.
+Only the selection rule changes. 270 runs, 0 errors.
+
+![Related work](figures/fig17_related_work.png)
+
+**What was run** (`scripts/related_work.py`):
+
+| regime | method | how |
+|---|---|---|
+| blind | **IterPert** (Huang, Lopez, Hütter, Kudo, Rios, Regev; RECOMB 2024) | the closest prior work: sequential design of Perturb-seq screens, benchmarked on this same Replogle K562 screen. Run through **IterPert's own code**, configured line for line from `iterpert.py`: MaxDist (k-centre) on the mean of max-normalised kernels, i.e. its 8 released prior kernels plus the model's kernel |
+| blind | Core-Set, BALD, BatchBALD, BADGE, LCMD, ACS-FW | IterPert's published benchmark, through the same code (its fork of `bmdal_reg`) with IterPert's exact selection/transform settings |
+| blind | k-means sampling (GeneDisco), TypiClust | ported from IterPert's `query_strategies` |
+| peek | TMC Data Shapley, Data Banzhaf (MSR), datamodels | data valuation, the standard answer to "which training points make a predictor good". Each runs on greedy's and REINFORCE's own reward (MRR on aux) with **REINFORCE's budget of 19,200 reward evaluations**, and keeps the top 100 |
+| peek | exemplar facility location, Core-Set, both on the true signatures | "pick representative signatures" |
+
+Two adaptations were unavoidable. **The model.** IterPert's kernels come from GEARS's
+per-perturbation output. Here the model is the deployed predictor's own rule: a gene is
+represented by its GO-kNN predicted signature from every measured gene (aux plus the genes
+chosen so far, leave-one-out), refitted after each round. A blind method receives a
+signature matrix whose unmeasured rows are NaN, so it cannot read a hidden signature by
+accident. **The protocol.** IterPert's benchmark starts from a random labelled batch, then
+runs acquisition rounds. Scaled to this budget, that is 25 random and then 3 × 25 by the
+method. It is also the only protocol the reference code supports: BALD, BatchBALD and
+BADGE need labelled genes for their posterior transform. `IterPert, no random first batch`
+measures what that batch costs.
+
+### Blind: every published method sits below the static floor
+
+| report MRR ÷ random median | K562 | vs GO facility floor (wins, t) | RPE1 | vs floor (wins, t) |
+|---|---:|---:|---:|---:|
+| GO facility location (static, ours) | **1.23×** | — | **1.30×** | — |
+| PPO blind (ours) | 1.23× | −0.004 (4/9, −0.8) | 1.33× | −0.002 (4/9, −0.4) |
+| **IterPert, its 8 released priors** | **1.02×** | −0.040 (0/9, −8.6) | **1.09×** | −0.026 (0/9, −9.3) |
+| IterPert, GO prior only | 1.08× | −0.030 (3/9, −2.9) | 1.14× | −0.021 (0/9, −4.3) |
+| IterPert, no random first batch | 0.99× | −0.045 (0/3, −3.7) | 1.14× | −0.021 (0/3, −3.4) |
+| BatchBALD | 1.13× | −0.022 (2/9, −2.1) | 1.18× | −0.016 (1/9, −3.4) |
+| ACS-FW | 1.12× | −0.023 (1/9, −3.4) | 1.17× | −0.018 (1/9, −2.4) |
+| Core-Set | 1.08× | −0.030 (2/9, −3.7) | 1.17× | −0.018 (1/9, −3.1) |
+| LCMD | 1.08× | −0.030 (0/9, −4.2) | 1.11× | −0.024 (1/9, −3.2) |
+| k-means sampling (GeneDisco) | 1.08× | −0.031 (2/9, −3.1) | 1.01× | −0.034 (0/9, −7.1) |
+| TypiClust | 1.06× | −0.033 (0/9, −7.0) | 1.13× | −0.021 (2/9, −3.4) |
+| BALD | 1.04× | −0.036 (0/9, −7.0) | 1.15× | −0.019 (1/9, −4.1) |
+| BADGE | 1.03× | −0.038 (0/9, −5.7) | 1.03× | −0.031 (1/9, −4.2) |
+
+Differences are MRR, paired by split against the best static floor on that split (the
+strongest of the three prior views), with a one-sample t over runs. In all 22 cells
+(11 methods × 2 lines) the published method is below the floor, at t from −2.1 to −9.3.
+PPO blind beats every one of them, by 0.014–0.042 MRR. **IterPert itself is statistically
+indistinguishable from choosing at random on K562** (1.02×, 1% of the cheat's margin). It
+ties the benchmark it was published against (1.01–1.18×), and the random first batch is
+not the cause (0.99× / 1.14× without it).
+
+**The rule, not the priors, is what loses.** Four static, prior-only variants: no model
+kernel, no random batch, nothing learned.
+
+| report MRR ÷ random median, K562 / RPE1 | GO Jaccard | IterPert's 8 priors |
+|---|---:|---:|
+| k-centre (IterPert's MaxDist rule) | 1.14× / 1.02× | 1.03× / 1.11× |
+| facility location (our floor's rule) | **1.23× / 1.30×** | **1.21× / 1.31×** |
+
+Switching the rule from k-centre to facility location gains **+0.09 to +0.28×** in every
+column. Switching the prior from GO to IterPert's eight moves the score by −0.11 to +0.09×
+under k-centre, with no consistent sign, and by −0.02 / +0.01 under facility location. One
+reading of why: k-centre minimises the distance of the *worst-covered* gene, so it buys
+outliers, while facility location maximises *total* coverage, which is what a kNN
+reference atlas needs. BALD (max posterior variance) and BADGE (distance-weighted sampling)
+share k-centre's pull toward the far tail. That reading is not separately measured here.
+
+**This closes the representation question the blind regime left open.** "The blind regime"
+ended on gene priors richer than GO (sequence, expression, pathway topology) as the untested
+input. IterPert's priors are exactly those: PoPS gene features, ESM protein-language-model
+embeddings, BioGPT text embeddings, node2vec on the GEARS GO graph, three optical pooled
+screens, and the other cell line's Perturb-seq. Under the best static rule they tie GO
+Jaccard on both lines (1.21× vs 1.23×, 1.31× vs 1.30×). That extends the 2026-11-17
+negative from GO-derived views to multimodal ones. The priors enter only the selection; the
+predictor stays GO-kNN, as everywhere in this section. A predictor that consumes the priors
+is gap 0's question, not this one.
+
+### Peek: data valuation beats greedy, but not the RL methods
+
+| report MRR ÷ random median | K562 | vs REINFORCE (wins, t) | RPE1 | vs REINFORCE (wins, t) |
+|---|---:|---:|---:|---:|
+| greedy, all aux genes | 1.24× | −0.020 (0/9, −10.4) | 1.26× | −0.033 (0/9, −7.5) |
+| **REINFORCE, per-gene logits (ours)** | **1.35×** | — | **1.59×** | — |
+| **critic-shrunk greedy (ours)** | **1.38×** | +0.004 (5/9, +1.4) | **1.56×** | −0.003 (5/9, −0.9) |
+| PPO feature policy, peek (ours) | 1.35× | −0.000 (5/9, −0.1) | 1.54× | −0.005 (2/9, −1.9) |
+| TMC Data Shapley | 1.31× | −0.008 (3/9, −1.4) | 1.43× | −0.016 (1/9, −3.3) |
+| Data Banzhaf (MSR) | 1.24× | −0.020 (0/9, −4.9) | 1.51× | −0.008 (5/9, −2.0) |
+| datamodels (l1 surrogate) | 1.22× | −0.023 (0/9, −4.7) | 1.47× | −0.012 (2/9, −2.5) |
+| exemplar facility location, signatures | 1.13× | −0.039 (0/3, −4.3) | 1.26× | −0.034 (0/3, −13.5) |
+| Core-Set on true signatures | 0.99× | −0.064 (0/3, −4.9) | 1.22× | −0.037 (0/3, −4.2) |
+
+- **Data valuation is the strongest published family, and it still trails RL.** All three
+  methods beat greedy on RPE1 (89–100% wins); on K562 only Shapley does (7/9). The best
+  valuation method on each line comes within 0.008 MRR of REINFORCE, which is not
+  significant at n = 9 (t = −1.4 and −2.0). But it is a different method on each line:
+  Shapley on K562, where Banzhaf is level with greedy, and Banzhaf on RPE1, where Shapley
+  trails REINFORCE at t = −3.3. The three RL methods are the only ones in the
+  1.35–1.38× / 1.54–1.59× band on both lines.
+- **The reward is mostly additive, and the rest is what RL buys.** A linear model of the
+  size-100 reward on inclusion indicators explains **60%** of its variance (datamodels,
+  5-fold CV R²). Ranking genes by those coefficients still loses to REINFORCE by
+  0.023 / 0.012 MRR. The unexplained part is interaction (one gene's value depends on which
+  neighbours are already in), which is what optimising the set jointly captures. This is
+  the "search" explanation from "RL on the acquisition gap", now with a number on it.
+- **Seeing the signatures is not enough by itself.** Choosing representative signatures
+  (facility location or k-centre on the true signatures) lands at or below greedy:
+  0.99–1.13× on K562, 1.22–1.26× on RPE1. The value comes from optimising the predictor's
+  own retrieval reward, not from coverage of signature space.
+
+### What this means
+
+- **The project now has its related-work table, and both RL conclusions survive it.**
+  Peek: RL ≥ every published data-selection method at REINFORCE's evaluation budget,
+  clearly so against all but the best one per line. Blind: no learned method, ours or
+  published, beats the static floor. The published active-learning methods sit
+  significantly *below* it, and PPO blind beats every one of them.
+- **Frame the published methods' numbers fairly.** IterPert and GeneDisco were built for a
+  different objective: the error of a trained model (GEARS) on unseen perturbations. Here
+  the objective is retrieval with a GO-kNN reference set. "Below the floor here" says that
+  diversity-seeking acquisition is the wrong bias for this objective. It does not say the
+  methods are broken: the same code reproduces its own selection exactly (checks below).
+- The blind separation now reads: *prior knowledge, GO or eight richer modalities, is worth
+  ~1.2–1.3× random, and facility location already extracts it; IterPert's rule recovers
+  almost none of it.*
+
+### Caveats
+
+- The model view (GO-kNN predicted signatures) stands in for GEARS's embeddings. A
+  different representation might help the model-based methods. The static 2×2 does not
+  depend on it.
+- IterPert released priors only for K562. On RPE1 the same recipe is applied: the authors'
+  own mean imputation for genes a source lacks, which covers 84% of RPE1 candidates.
+  `rpe1_kernel` is dropped there (it is the deployment screen's own signatures, i.e. the
+  answer). A K562 Perturb-seq prior built the same way is added, covering 55% of
+  candidates. On K562 all eight priors cover 99.5% of candidates.
+- Omitted: BAIT (`iterpert.py` marks it "there is bug somehow"); ProbCover (its radius is set
+  by k-means purity against a number of *classes* this task does not have, and its soft
+  relative, facility location, is the floor); GeneDisco's ensemble-uncertainty methods
+  (BALD and BatchBALD are the GP-posterior versions in the same benchmark);
+  BioDiscoveryAgent (an LLM agent with a different objective, hit discovery).
+- n = 9 per stochastic method and n = 3 per deterministic one, per line. One predictor, one
+  budget. The valuation budget is matched to REINFORCE's 19,200 evaluations, not to PPO's or
+  the critic's.
+- Library drift: sklearn 1.9 rather than the authors' (its KMeans `n_init` default changed);
+  IterPert's `dill` import is stubbed (used only by save/load helpers that never run here).
+- `report.md` also carries a separate, in-progress mechanism diagnostic ("Why the published
+  blind methods lose": GO coverage vs reference coherence). It was added independently and
+  is not summarised here.
+
+**Fidelity checks.** The kernel zip matches Dataverse's MD5. Every released kernel equals
+feat featᵀ to 3×10⁻⁷, so rebuilding it on our genes is the same prior. A numpy replica of
+IterPert's MaxDist picks the same genes as IterPert's own code on 100% of 72 rounds
+(99.9% on 54 GO-only rounds, min 96%). No bmdal method hit its random-fill fallback. The
+third-party pickles load through an unpickler that admits only numpy arrays.
+
+Reproduce with `./submit.sh related` (fetch ~1 min, prior alignment ~1 min, a 39-task CPU
+array of ≤ 10 min, then the report). Outputs go to
+`artifacts/rl_acquire/related/{runs/,priors_*.npz,priors_check.json}`, the "Related work on
+the same task" section of `artifacts/rl_acquire/report.md`, and fig17.
 
 ---
 

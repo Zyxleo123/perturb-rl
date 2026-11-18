@@ -86,6 +86,28 @@ state|https://github.com/ArcInstitute/state|main}"
 : "${PJ_RLA_FORCE:=}"      # 1 = redo tasks whose result file already exists
 export PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS PJ_RLA_PER_TASK PJ_RLA_MAXPAR PJ_RLA_SMOKE PJ_RLA_FORCE
 
+# ---------------------------------------------------------------- related work (jobs 14, 44-45)
+# Published acquisition methods re-run on the RL task's exact splits, predictor and
+# report genes (scripts/related_work.py). The datasets and splits are the RL grid's
+# own (PJ_RLA_DATASETS / PJ_RLA_SPLITS), so every number pairs with an RL run.
+# Code is cloned, never pip-installed, into $PJ_CODE (UNTRUSTED, like every baseline).
+: "${RELATED_REPOS:=\
+iterative-perturb-seq|https://github.com/Genentech/iterative-perturb-seq|master \
+bmdal_reg|https://github.com/dholzmueller/bmdal_reg|main}"
+# IterPert's released prior-knowledge kernels for Replogle K562 essential (Harvard
+# Dataverse, the URL hard-coded in iterpert/iterpert.py), MD5 from the Dataverse API.
+: "${DV_iterpert_kernels:=7377301}"
+: "${MD5_iterpert_kernels:=25cb5ef91e1b53c33414b4eb42ea6213}"
+: "${PJ_REL_METHODS:=iterpert iterpert_go iterpert_cold kc_go kc_iterpert_priors fl_iterpert_priors al_coreset al_bald al_batchbald al_badge al_lcmd al_acsfw al_kmeans al_typiclust dv_shapley dv_banzhaf dv_datamodels rep_facility_sig rep_coreset_sig}"
+: "${PJ_REL_SEEDS:=0 1 2}"     # deterministic methods run seed 0 only (see related_work.METHODS)
+: "${PJ_REL_PER_TASK:=8}"      # grid entries run in parallel in one array task
+: "${PJ_REL_MAXPAR:=30}"
+: "${PJ_REL_NEVAL:=}"          # reward evaluations per data-valuation run; empty = REINFORCE's 600 x 32
+: "${PJ_REL_SMOKE:=}"          # 1 = 300 reward evaluations, results to artifacts/rl_acquire/related_smoke/
+: "${PJ_REL_FORCE:=}"          # 1 = redo runs whose result file exists
+export RELATED_REPOS DV_iterpert_kernels MD5_iterpert_kernels PJ_REL_METHODS PJ_REL_SEEDS \
+       PJ_REL_PER_TASK PJ_REL_MAXPAR PJ_REL_NEVAL PJ_REL_SMOKE PJ_REL_FORCE
+
 # ---------------------------------------------------------------- helpers
 pj_banner() {
   echo "=================================================================="
