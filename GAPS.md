@@ -711,6 +711,105 @@ the same task" section of `artifacts/rl_acquire/report.md`, and fig17.
 
 ---
 
+## Case studies: the gap and the improvement, gene by gene
+
+**Added 2026-11-18.** The sections above report aggregates. These four figures follow named
+genes through the same measurements, drawn in journal format: 7-inch width, serif type,
+panel letters, captions below. Vector PDFs sit beside the PNGs in [figures/](figures/).
+Each figure is redrawn from `artifacts/story/` alone, and each case is chosen by a rule fixed
+in code, not by eye.
+
+![The gap, one gene at a time](figures/fig18_gap_crowd.png)
+
+> **Figure 18 | The unseen-gene gap, one gene at a time (Replogle K562).** A held-out
+> target (pseudo-bulk of 32 cells) is scored against all 1,092 candidate genes twice. Top
+> row of each panel: the candidates' measured signatures, built from the other half of
+> the cells. Bottom row: their GO-kNN predictions, each the GO-Jaccard-weighted mean of
+> its 10 most GO-similar other genes (leave-one-out). Grey dots are candidates (vertical
+> jitter only); the red dot is the true gene, labelled with its rank. **a–c**, the genes
+> at the 25th, 50th and 75th percentile of predicted rank, among the 371 genes the
+> measurement ranks first. cos(prediction, measured) is the cosine between a gene's
+> predicted signature and its own measured signature.
+
+The measurement ranks 34% of genes first. Among those, the predicted rank is
+**10 / 57 / 300** at the 25th / 50th / 75th percentile (RPE1: 16 / 183 / 707). The
+predictions are not wrong in direction (cosine 0.26–0.51 to the truth for the three genes
+shown). They crowd together, so the target cannot pick its own out. Leave-one-out with
+every other gene measured gives 3.0% top-1, kinder than gap 0's 5-fold 0.8%, and the
+picture is the same.
+
+![Where the RL gain lands](figures/fig19_rescue_flow.png)
+
+> **Figure 19 | Where REINFORCE's gain lands, gene by gene.** Each line is one held-out
+> report gene on GAPS part 4's split (budget 100 of 437). It joins the gene's rank among
+> all report genes under a typical random atlas (median over the report table's 100
+> random draws) to its rank under REINFORCE's atlas (median over 3 seeds). Red: rank
+> improved at least 2×. Blue: worsened at least 2×. Grey: within 2×. Black: *ATP6V0C*,
+> dissected in Fig. 20. Named genes are the largest rescues. The counts on the rank-1
+> line are genes ranked first under each atlas. **a**, K562 (182 report genes).
+> **b**, RPE1 (257).
+
+Genes ranked first go from **4 to 16 on K562** and **0 to 23 on RPE1**. More genes rise
+≥2× than fall ≥2×: 52 vs 13 of 182, and 92 vs 24 of 257. The losses are real and drawn.
+The per-gene numbers reproduce the report table's random median and REINFORCE MRRs to
+4×10⁻⁸.
+
+![One rescue dissected](figures/fig20_rescue_anatomy.png)
+
+> **Figure 20 | One rescue dissected: *ATP6V0C* (K562).** *ATP6V0C* is never measured:
+> its signature is predicted from the 10 GO-closest genes in the atlas. **a, b**, those
+> neighbours in a typical random atlas (the draw whose rank for *ATP6V0C* is the median of
+> 100) and in REINFORCE's atlas (the seed with the median rank). Radial distance is
+> 1 − GO Jaccard *J* (dashed rings at *J* = 0.25 and 0.50). Marker area and spoke width
+> are proportional to the neighbour's kNN weight. Colour is the cosine between the
+> neighbour's measured signature and *ATP6V0C*'s. Panel titles give *ATP6V0C*'s rank among
+> the 182 report genes and the cosine between its prediction and its measured signature.
+> **c**, *ATP6V0C*'s 36 most-changed readout genes: measured, and as predicted from each
+> atlas. Each row is scaled to its own maximum |Δ|.
+
+*ATP6V0C* has the largest rank gain among genes REINFORCE ranks first. In the random
+atlas its neighbours are a mix of ribosomal, ESCRT and other housekeeping genes, none with
+GO overlap above 0.18. REINFORCE's atlas contains **ATP6V1B2**, another V-ATPase subunit:
+GO overlap 0.44, 29% of the kNN weight, and a signature that matches *ATP6V0C*'s (cosine
+0.66). The prediction's cosine to the truth rises from 0.40 to 0.55 and the rank from #20
+to #1. REINFORCE chose *ATP6V1B2* in all 3 seeds, and the static GO facility-location
+floor did not choose it. *ATP6V1B2*'s own `coherence` is middling (53rd percentile of
+candidates), so this is not PPO's coherence rule at work. It is the reward being optimised
+directly: *ATP6V1B2* is worth measuring because of report genes like *ATP6V0C*.
+
+![One greedy decision](figures/fig21_greedy_noise.png)
+
+> **Figure 21 | Greedy's scored gain barely predicts held-out gain (K562).** Greedy
+> acquisition: the reward is retrieval MRR on all visible aux genes, every candidate is
+> scored, seed 0. **a**, the decision whose correlation is the median (choosing the 75th
+> gene). For each of the 363 available candidates: its MRR gain on the genes greedy is
+> scored on, against its gain on the held-out report genes. **b**, that correlation at
+> each of greedy's 99 decisions (red dot: panel a). **c**, where each of greedy's 99
+> actual picks ranked among the available candidates by held-out gain, in deciles. A pick
+> that carried no information would be uniform (dashed line).
+
+Greedy's pick at that decision, *SFSWAP*, ranks #203 of 363 on held-out gain. Over all 99
+decisions only 12 picks land in the held-out top decile, against about 10 for a random
+pick. The median *r* is 0.16 on K562 and 0.11 on RPE1, in line with the *r* = 0.17
+reported above. Greedy's atlas still helps held-out genes overall: its picks' cumulative
+held-out gain equals the scored gain (0.185 vs 0.186 MRR), because almost any added gene
+helps. What it cannot do is tell the better candidates from the rest.
+
+**A check that did not become a figure.** The planned fifth case was "the blind regime is
+capped because `coherence`, PPO peek's strongest feature, is invisible before measuring".
+It is not invisible. A ridge on features available before measurement (GO degree and
+centrality, facility gain, and the agreement, signal and GO mass of the gene's measured
+neighbourhood) predicts it at **R² 0.65 on K562 and 0.50 on RPE1**. Spearman with
+neighbourhood agreement alone is 0.79 / 0.74. And GO facility location already picks
+coherent genes nearly as well as REINFORCE: median coherence 0.40 vs 0.44 on K562, and
+0.55 vs 0.55 on RPE1. Whatever caps the blind regime, it is not that coherence cannot be
+seen.
+
+Reproduce with `./submit.sh story` (CPU: data ~11 min, figures ~1 min) and redraw with
+`./submit.sh storyfigs`.
+
+---
+
 ## Gap 1 — The reward oracle is the bottleneck, not the generator
 
 ![Inverse-design ladder](figures/fig8_inverse_ladder.png)

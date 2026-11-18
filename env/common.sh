@@ -108,6 +108,12 @@ bmdal_reg|https://github.com/dholzmueller/bmdal_reg|main}"
 export RELATED_REPOS DV_iterpert_kernels MD5_iterpert_kernels PJ_REL_METHODS PJ_REL_SEEDS \
        PJ_REL_PER_TASK PJ_REL_MAXPAR PJ_REL_NEVAL PJ_REL_SMOKE PJ_REL_FORCE
 
+# ---------------------------------------------------------------- story case studies (jobs 46-47)
+# scripts/story_cases.py: named-gene case studies for the gap / improvement story,
+# on the RL grid's datasets (PJ_RLA_DATASETS) and GAPS part 4's split.
+: "${PJ_STORY_FORCE:=}"        # 1 = recompute datasets whose artifacts/story npz exists
+export PJ_STORY_FORCE
+
 # ---------------------------------------------------------------- helpers
 pj_banner() {
   echo "=================================================================="

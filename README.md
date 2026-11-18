@@ -37,6 +37,8 @@ PJ_RLA_SMOKE=1 ./submit.sh rlacq_smoke   # 3-iteration code-path check, no repor
 ./submit.sh related      # published methods on the RL task: fetch IterPert + kernels -> priors -> array -> report
 ./submit.sh related_runs # array + report only (code, kernels and priors already there)
 PJ_REL_SMOKE=1 PJ_RLA_SPLITS=4 PJ_REL_SEEDS=0 ./submit.sh related_smoke   # every method once, 300 reward evals
+./submit.sh story        # gap / improvement case studies: per-gene data (CPU, ~11 min) -> fig18-fig21
+./submit.sh storyfigs    # redraw fig18-fig21 from artifacts/story/ only (cheap)
 squeue -u $USER -o '%.8i %.9P %.16j %.8T %.10M %R'
 ```
 
@@ -140,6 +142,8 @@ GPU in this pool (sm_70 v100 → sm_90 h200).
 | `43_rl_report` | cpu | re-score every chosen set in GAPS's env, table, fig15-fig17 |
 | `44_related_prep` | cpu | IterPert's priors re-expressed on our candidates (numpy-only unpickler, kernel = feat featᵀ checked) |
 | `45_related_run` | cpu, array | IterPert + its AL benchmark through IterPert's own code (blind); data valuation + exemplars (peek) |
+| `46_story_data` | cpu | case-study data: per-gene ranks, kNN neighbourhoods, greedy's per-step gains → `artifacts/story/`; reconciles with `records.jsonl` |
+| `47_story_figs` | cpu | fig18-fig21 from `artifacts/story/` only |
 | `30_figures` | cpu | aggregate figures, drawn from artifacts |
 | `31_case_studies` | cpu | named individual perturbations rather than metrics |
 | `33_generalization_figures` | cpu | redraw fig13-fig14 from `artifacts/generalization/` |
@@ -165,9 +169,19 @@ GPU in this pool (sm_70 v100 → sm_90 h200).
 | **`fig15_rl_acquisition`** | **RL vs greedy vs facility location on gene acquisition, per split x seed; the five blind variants sit on the static floor** |
 | **`fig16_rl_curves`** | **PPO learning curves: validation vs facility location, report set (diagnostic)** |
 | **`fig17_related_work`** | **published acquisition methods (IterPert, Core-Set, BALD, BADGE, LCMD, TypiClust, Data Shapley, ...) beside our RL, same task** |
+| **`fig18_gap_crowd`** | **the gap, one gene at a time: a held-out target vs all 1,092 measured signatures, then vs their GO-kNN predictions** |
+| **`fig19_rescue_flow`** | **where the RL gain lands: every report gene's rank under a typical random atlas → REINFORCE's atlas** |
+| **`fig20_rescue_anatomy`** | **one rescue dissected: the 10 neighbours each atlas lends ATP6V0C, and the readout they predict** |
+| **`fig21_greedy_noise`** | **one greedy decision: gain on the genes it is scored on vs gain on held-out genes, for every candidate** |
 
 `fig10`–`fig12` are case studies: named perturbations, with the selection rule printed on
 every panel and representative cases picked by **median** rank rather than cherry-picked.
+`fig18`–`fig21` tell the gap / improvement story the same way, in journal format (7-inch
+width, STIX serif, panel letters, no titles; captions live in GAPS.md, and a vector PDF sits
+beside each PNG). Their selection rules are deterministic and live in
+`scripts/story_draw.py`: the 25th/50th/75th-percentile genes (fig18), the largest rescue
+among genes REINFORCE ranks #1 (fig20), and the decision whose correlation is the median
+(fig21).
 
 ### Two traps worth knowing about
 

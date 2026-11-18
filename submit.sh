@@ -23,6 +23,8 @@
 #   ./submit.sh related_runs         # same, reusing the fetched code/kernels and aligned priors
 #   ./submit.sh related_fetch        # fetch + prior alignment only
 #   PJ_REL_SMOKE=1 ./submit.sh related_smoke  # array only, 300 reward evaluations, separate output dir
+#   ./submit.sh story                # gap/improvement case studies: data (CPU) -> fig18-fig21
+#   ./submit.sh storyfigs            # redraw fig18-fig21 from artifacts/story/ only (cheap)
 #   FETCH_PDG_CHEMICAL=1 ./submit.sh # also pull the 37 GB chemical tarball
 set -euo pipefail
 
@@ -55,7 +57,8 @@ for v in PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS PJ_RLA_PER_TA
          PJ_RLA_SMOKE PJ_RLA_FORCE PJ_RLA_PPO_ITERS PJ_RLA_PPO_UNIV PJ_RLA_PPO_GROUP \
          PJ_RLA_PPO_EPOCHS PJ_RLA_PPO_LR PJ_RLA_PPO_ENT PJ_RLA_NVAL PJ_RLA_VAL_EVERY \
          PJ_RLA_PG_ITERS PJ_RLA_CRITIC_UNIV PJ_RLA_CRITIC_EPOCHS \
-         PJ_REL_METHODS PJ_REL_SEEDS PJ_REL_PER_TASK PJ_REL_MAXPAR PJ_REL_NEVAL PJ_REL_SMOKE PJ_REL_FORCE; do
+         PJ_REL_METHODS PJ_REL_SEEDS PJ_REL_PER_TASK PJ_REL_MAXPAR PJ_REL_NEVAL PJ_REL_SMOKE PJ_REL_FORCE \
+         PJ_STORY_FORCE; do
   if [ -n "${!v:-}" ]; then printf "export %s='%s'\n" "$v" "${!v}" >> "$ENVFILE"; fi
 done
 
@@ -231,6 +234,19 @@ fi
 if [ "$STAGE" = "rlacq_report" ]; then
   ID[rlreport]=$(sub "$J/43_rl_report.sbatch")
   printf '  %-10s %s\n' rlreport "${ID[rlreport]}"
+fi
+
+if [ "$STAGE" = "story" ]; then
+  # Case-study data (per-gene ranks, neighbourhoods, greedy's per-step gains), then the
+  # figures. afterany: the figure job gates on the npz itself and says what is missing.
+  ID[storydata]=$(sub "$J/46_story_data.sbatch")
+  ID[storyfigs]=$(sub "$J/47_story_figs.sbatch" "--dependency=afterany:${ID[storydata]}")
+  printf '  %-10s %s\n' storydata "${ID[storydata]}" storyfigs "${ID[storyfigs]}"
+fi
+
+if [ "$STAGE" = "storyfigs" ]; then
+  ID[storyfigs]=$(sub "$J/47_story_figs.sbatch")
+  printf '  %-10s %s\n' storyfigs "${ID[storyfigs]}"
 fi
 
 if [ "$STAGE" = "genfigs" ]; then
