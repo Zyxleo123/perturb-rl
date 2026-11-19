@@ -25,6 +25,7 @@
 #   PJ_REL_SMOKE=1 ./submit.sh related_smoke  # array only, 300 reward evaluations, separate output dir
 #   ./submit.sh story                # gap/improvement case studies: data (CPU) -> fig18-fig21
 #   ./submit.sh storyfigs            # redraw fig18-fig21 from artifacts/story/ only (cheap)
+#   ./submit.sh paperfigs            # re-render fig13/15/16/17 in the fig18-21 journal style (cheap)
 #   FETCH_PDG_CHEMICAL=1 ./submit.sh # also pull the 37 GB chemical tarball
 set -euo pipefail
 
@@ -247,6 +248,13 @@ fi
 if [ "$STAGE" = "storyfigs" ]; then
   ID[storyfigs]=$(sub "$J/47_story_figs.sbatch")
   printf '  %-10s %s\n' storyfigs "${ID[storyfigs]}"
+fi
+
+if [ "$STAGE" = "paperfigs" ]; then
+  # Re-render fig13/fig15/fig16/fig17 in the journal style of fig18-fig21, from
+  # saved artifacts only (so every figure in a write-up looks the same). Cheap.
+  ID[paperfigs]=$(sub "$J/48_paper_figs.sbatch")
+  printf '  %-10s %s\n' paperfigs "${ID[paperfigs]}"
 fi
 
 if [ "$STAGE" = "genfigs" ]; then
