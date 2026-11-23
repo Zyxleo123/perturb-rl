@@ -58,8 +58,13 @@ import repr_select as RS          # noqa: E402
 SEED = 0
 N_FOLDS = 5
 ALPHAS = (0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.65, 0.8, 0.9, 1.0)
-M_GLS = 100
-LAM_GRID = (1e-2, 3e-2, 1e-1, 3e-1, 1.0, 3.0)
+# The combiner's grid must be repr_select's own, or the two tables are not the same
+# measurement. Measured 2026-11-22: fixing m = 100 instead of sweeping it understated the
+# real views' gls (GO 2.67% against repr_select's 3.33%, cross-line 2.98% against 4.94%),
+# because with a weak similarity a large neighbourhood adds more noise than signal and
+# repr_select had selected m = 10. Reconciliation is checked at alpha = 1.
+M_GRID = RS.M_GRID
+LAM_GRID = RS.LAM_GRID
 
 
 def log(*a):
@@ -119,11 +124,12 @@ def run(ds, cache_path, priors_path, gears_dir, out_dir, knn):
         Pk = RP.knn_from_sim(S, YA, k=knn)
         m, _, _ = RP.score_matrix((Qu @ RH.unit(Pk) .T).astype(np.float32), own)
         row["knn_avg"] = m
-        Pg, picked = RS.tune(lambda l: RS.predict_gls(S, YA, G, M_GLS, l, nrm),
-                             list(LAM_GRID), YA, Qu, own, K, folds, val_fold)
+        Pg, picked = RS.tune(lambda p: RS.predict_gls(S, YA, G, p[0], p[1], nrm),
+                             [(m_, l_) for m_ in M_GRID for l_ in LAM_GRID],
+                             YA, Qu, own, K, folds, val_fold)
         m2, _, _ = RP.score_matrix((Qu @ RH.unit(Pg).T).astype(np.float32), own)
         row["gls"] = m2
-        row["gls_lambda"] = sorted({str(v) for v in picked.values()})
+        row["gls_m_lambda"] = sorted({str(v) for v in picked.values()})
         log(f"  {tag:26s} spearman={row['spearman']:+.3f} recall@{knn}={row['recall_at_k']*100:5.1f}%"
             f"   knn_avg top1={m['top1']*100:5.2f}%   gls top1={m2['top1']*100:5.2f}%")
         return row

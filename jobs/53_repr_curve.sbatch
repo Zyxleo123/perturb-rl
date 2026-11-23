@@ -3,7 +3,7 @@
 #SBATCH --partition=cpu
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=12G
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --output=/zfsauton/scratch/yixiz/10703_pj/logs/%x_%j.out
 #SBATCH --error=/zfsauton/scratch/yixiz/10703_pj/logs/%x_%j.out
 
@@ -22,7 +22,7 @@ PREAMBLE="${SLURM_SUBMIT_DIR:-/zfsauton2/home/yixiz/10703_pj}/env/common.sh"
 pj_consume_args "$@"
 pj_banner
 pj_mkdirs
-echo "request  : cpu x8, 12G, 4h, knn=${PJ_REPR_KNN:-10}"
+echo "request  : cpu x8, 12G, 8h, knn=${PJ_REPR_KNN:-10}"
 
 GD="$PJ_DATA/gears"
 REL="$PJ_ARTIFACTS/rl_acquire/related"
