@@ -32,6 +32,8 @@
 #   ./submit.sh reprsel              # ranking neighbours vs combining them: knn average vs ridge vs MMR
 #   ./submit.sh reprcurve            # how good must a representation be? similarity quality -> retrieval
 #   ./submit.sh reprfigs             # fig22 + paired significance tests, from saved artifacts (cheap)
+#   ./submit.sh reprcalib            # calibration ablation: oracle similarity raw vs standardised
+#     then: python3 scripts/repr_splice.py   # regenerate GAPS.md's repr block from the artifacts (login node, no compute)
 #   FETCH_PDG_CHEMICAL=1 ./submit.sh # also pull the 37 GB chemical tarball
 set -euo pipefail
 
@@ -271,9 +273,11 @@ if [ "$STAGE" = "repr" ]; then
   ID[reprpred]=$(sub "$J/51_repr_predict.sbatch" "--dependency=afterok:${ID[reprprobe]}")
   ID[reprsel]=$(sub "$J/52_repr_select.sbatch" "--dependency=afterok:${ID[reprpred]}")
   ID[reprcurve]=$(sub "$J/53_repr_curve.sbatch" "--dependency=afterok:${ID[reprsel]}")
-  ID[reprfigs]=$(sub "$J/54_repr_figs.sbatch" "--dependency=afterany:${ID[reprcurve]}")
+  ID[reprcalib]=$(sub "$J/55_repr_calib.sbatch")
+  ID[reprfigs]=$(sub "$J/54_repr_figs.sbatch" "--dependency=afterany:${ID[reprcurve]}:${ID[reprcalib]}")
   printf '  %-10s %s\n' reprprobe "${ID[reprprobe]}" reprpred "${ID[reprpred]}" \
-         reprsel "${ID[reprsel]}" reprcurve "${ID[reprcurve]}" reprfigs "${ID[reprfigs]}"
+         reprsel "${ID[reprsel]}" reprcurve "${ID[reprcurve]}" reprcalib "${ID[reprcalib]}" \
+         reprfigs "${ID[reprfigs]}"
 fi
 
 if [ "$STAGE" = "reprprobe" ]; then
@@ -302,6 +306,13 @@ if [ "$STAGE" = "reprcurve" ]; then
   # becomes a number a future representation can be measured against.
   ID[reprcurve]=$(sub "$J/53_repr_curve.sbatch")
   printf '  %-10s %s\n' reprcurve "${ID[reprcurve]}"
+fi
+
+if [ "$STAGE" = "reprcalib" ]; then
+  # Calibration ablation: oracle similarity raw vs standardised, so the cost of an
+  # uncalibrated similarity to the ridge combiner is reproducible from saved data.
+  ID[reprcalib]=$(sub "$J/55_repr_calib.sbatch")
+  printf '  %-10s %s\n' reprcalib "${ID[reprcalib]}"
 fi
 
 if [ "$STAGE" = "reprfigs" ]; then

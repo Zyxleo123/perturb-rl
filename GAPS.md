@@ -67,10 +67,12 @@ This extends the blind-regime negative from the policy to the predictor and shar
 project's separation: *prior knowledge is worth ~1.2–1.3× in acquisition and essentially
 nothing in prediction; what carries value is measurement.*
 
-Two things do move. Solving for the combination weights instead of averaging the ten
+Two further results. Solving for the combination weights instead of averaging the ten
 neighbours — a closed-form ridge against the atlas Gram, which is measured, so neighbour
 redundancy is known without knowing the answer — is worth **3.4–3.6×** given a good
-similarity (12.5% → 44.4%, 14.1% → 48.3%) and 1.1–2.1× on anything real. And a gene
+similarity (12.5% → 44.4%, 14.1% → 48.3%). On any real representation it only *trades*:
+top-1 rises 1.1–2.1× on all six real rows, but median rank gets worse on five of them,
+so it is not a free improvement at today's representations. And a gene
 unseen in *this* cell line but measured in another is identifiable **2–3× better than GO
 manages**, paired within the genes the other line actually covers (top-1 2.1% → 6.1% on
 RPE1, 2.4% → 4.0% on K562). That is gap 0's unseen-*context* axis doing the work, which
@@ -887,20 +889,29 @@ being predicted.
 `*` uses a measurement of perturbation effect rather than prior knowledge alone.
 
 **Given a good similarity the combiner is worth 3.4×–3.6×** (12.5% → 44.4% on K562, 14.1% → 48.3% on RPE1), clearing even the
-ceiling set by a gene's own measured signature. **Given a realistic similarity it is worth
-nothing**: on K562 GO goes 2.9% → 3.3% while its top-10 and median rank both
-get worse. The ridge solve amplifies whatever ordering it is handed, and GO has nothing
-to amplify.
+ceiling set by a gene's own measured signature.
+
+**Given a realistic similarity the combiner trades rather than vanishes.** On 6 of 6
+prior-only and cross-line rows it raises top-1, and on 5 of 6 it makes the median rank
+*worse* — on K562, GO goes 2.9% → 3.3% top-1 while its median rank goes
+34 → 51, and the learned combination 2.4% → 3.8% while its rank goes
+25 → 65. The ridge solve amplifies whatever ordering it is handed:
+with a good one that is a large gain, with a poor one it sharpens a few cases and
+scrambles the rest — the same shape Framing A found when it whitened the scores. So the
+combiner is not free money at today's representations; it buys the top slot and sells
+the middle of the ranking.
 
 Paired over **genes** (a gene's ~1.8 queries are not independent evidence), Wilcoxon
-signed rank on per-gene rank against `go__knn_avg`:
+signed rank on per-gene rank against `go__knn_avg`. Median rank in this table is per
+*gene* — each gene's queries are averaged first — so it differs slightly from the
+per-*query* median in the table above (34 vs 35.5 for GO-kNN on K562).
 
 | | K562 median rank · win rate · p | RPE1 median rank · win rate · p |
 |---|---|---|
 | `xline__gls` | 29 · 53% · 1.7e-02 | 231 · 49% · 2.5e-04 |
 | `xline__knn_avg` | 26 · 54% · 1.2e-03 | 237 · 47% · 9.1e-05 |
 | `go__gls` | 55 · 52% · 7.1e-02 | 134 · 55% · 2.2e-03 |
-| `learned__knn_avg` | 24 · 55% · 2.0e-11 | 125 · 0% · 1.0e+00 |
+| `learned__knn_avg` | 24 · 55% · 2.0e-11 | 125 · identical to baseline |
 
 Read against the win rates, the top-1 numbers are less impressive than they look.
 `xline__gls` improves K562's median rank (35.5 → 29.0) but wins on only 53.4% of
@@ -1002,8 +1013,10 @@ misses are more adversarial than random — when it retrieves the wrong neighbou
 retrieves genes that are genuinely confusable with the target, not arbitrary ones.
 
 **One reading does not.** Whether the *combiner* does better on a real
-representation than on a matched corruption goes opposite ways on the two lines
-(K562 better by 0.42×, RPE1 worse by 0.83×). A tempting story — that real
+representation than on a matched corruption goes opposite ways on the two lines:
+the real representation's ridge gain beats the sweep's on 3 of 4 K562 rows and 0 of 4 RPE1 rows. For GO alone that is K562 1.16× vs 0.74×; RPE1 1.19× vs 2.03×.
+(On RPE1 three of the four rows are the same ranking, because the learned
+combinations put all their weight on GO.) A tempting story — that real
 mistakes are *redundant*, retrieving several members of one complex, which is exactly
 the structure G⁻¹ deconvolves — fits K562 and is refuted by RPE1. So it is recorded
 as unexplained rather than asserted, and the isotropic sweep is not a reliable
@@ -1011,15 +1024,15 @@ predictor of the combiner's value on a real representation in either direction.
 
 What *is* consistent: the combiner's large gains need high ordering quality. It reaches
 3.6× on K562, 3.4× on RPE1 at the oracle, against 1.1–2.1× on any
-available representation, and the ridge solve can even fall *below* plain averaging at
-middling quality because it amplifies whatever ordering it is handed.
+available representation.
 
 That is the specification this section buys. A gene representation for this task needs
 **top-k neighbour recall**, not global correlation, and it needs **calibrated**
 similarity magnitudes: kNN reads only the ordering, but the ridge solve reads
-b = s(g,j)‖y_j‖ as a magnitude, and standardising the similarity alone costs about a
-fifth of the combiner's value. So it should be trained on a top-k ranking objective
-with calibrated scores, not fitted to reproduce the whole similarity matrix.
+b = s(g,j)‖y_j‖ as a magnitude. Measured on the oracle similarity, standardising it —
+same ordering, different magnitudes — moves the ridge combiner's top-1 K562 44.4% → 33.8% (−24%) with kNN unchanged to 0.05 points; RPE1 48.3% → 27.8% (−42%) with kNN unchanged to 0.26 points.
+So it should be trained on a top-k ranking objective with calibrated scores, not
+fitted to reproduce the whole similarity matrix.
 <!-- repr-generated: end -->
 
 Reproduce the whole chain with `./submit.sh repr` (probe → pred → sel → curve →

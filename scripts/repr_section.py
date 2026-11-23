@@ -82,14 +82,40 @@ def main():
       f"{pct(m(k,'oracle__gls'))} on {SHORT.get(k,k)}" +
       (f", {pct(m(ds_list[1],'oracle__knn_avg'))} → {pct(m(ds_list[1],'oracle__gls'))} on {SHORT.get(ds_list[1],ds_list[1])}"
        if len(ds_list) > 1 else "") + "), clearing even the")
-    P("ceiling set by a gene's own measured signature. **Given a realistic similarity it is worth")
-    P(f"nothing**: on {SHORT.get(k,k)} GO goes {pct(m(k,'go__knn_avg'))} → {pct(m(k,'go__gls'))} while its top-10 and median rank both")
-    P("get worse. The ridge solve amplifies whatever ordering it is handed, and GO has nothing")
-    P("to amplify.")
+    P("ceiling set by a gene's own measured signature.")
+    P()
+    # With a realistic similarity the combiner does not vanish -- it TRADES. Counted from
+    # the rows rather than asserted, because an earlier draft called it "worth nothing"
+    # and the table under it said otherwise.
+    up = dn = tot = 0
+    for src in ("go", "learned", "xline"):
+        for d in ds_list:
+            a, b = f"{src}__knn_avg", f"{src}__gls"
+            if a not in sel["datasets"][d]["results"] or b not in sel["datasets"][d]["results"]:
+                continue
+            tot += 1
+            up += m(d, b) > m(d, a)
+            dn += m(d, b, "median_rank") > m(d, a, "median_rank")
+    P(f"**Given a realistic similarity the combiner trades rather than vanishes.** On {up} of {tot}")
+    P(f"prior-only and cross-line rows it raises top-1, and on {dn} of {tot} it makes the median rank")
+    P(f"*worse* — on {SHORT.get(k,k)}, GO goes {pct(m(k,'go__knn_avg'))} → {pct(m(k,'go__gls'))} top-1 while its median rank goes")
+    P(f"{m(k,'go__knn_avg','median_rank'):.0f} → {m(k,'go__gls','median_rank'):.0f}, and the learned combination "
+      f"{pct(m(k,'learned__knn_avg'))} → {pct(m(k,'learned__gls'))} while its rank goes")
+    P(f"{m(k,'learned__knn_avg','median_rank'):.0f} → {m(k,'learned__gls','median_rank'):.0f}. The ridge solve amplifies whatever ordering it is handed:")
+    P("with a good one that is a large gain, with a poor one it sharpens a few cases and")
+    P("scrambles the rest — the same shape Framing A found when it whitened the scores. So the")
+    P("combiner is not free money at today's representations; it buys the top slot and sells")
+    P("the middle of the ranking.")
     P()
     if stats["datasets"]:
+        b0 = next((v.get("median_rank_baseline") for v in stats["datasets"].get(ds_list[0], {}).values()
+                   if isinstance(v, dict) and "median_rank_baseline" in v), None)
         P("Paired over **genes** (a gene's ~1.8 queries are not independent evidence), Wilcoxon")
-        P("signed rank on per-gene rank against `go__knn_avg`:")
+        P("signed rank on per-gene rank against `go__knn_avg`. Median rank in this table is per")
+        P("*gene* — each gene's queries are averaged first — so it differs slightly from the")
+        P("per-*query* median in the table above"
+          + (f" ({m(ds_list[0],'go__knn_avg','median_rank'):.0f} vs {b0:.1f} for GO-kNN on "
+             f"{SHORT.get(ds_list[0],ds_list[0])})" if b0 is not None else "") + ".")
         P()
         P("| | " + " | ".join(f"{SHORT.get(d,d)} median rank · win rate · p" for d in ds_list) + " |")
         P("|---|" + "---|" * len(ds_list))
@@ -97,8 +123,15 @@ def main():
             cells = []
             for d in ds_list:
                 r = stats["datasets"].get(d, {}).get(key)
-                cells.append(f"{r['median_rank_method']:.0f} · {r['win_rate_excl_ties']*100:.0f}% · {r['wilcoxon_p']:.1e}"
-                             if r else "—")
+                if not r:
+                    cells.append("—")
+                elif r["wins"] + r["losses"] == 0:
+                    # no discordant pair: the row IS the baseline (all weight on GO).
+                    # Printing a 0% win rate here reads as "always loses".
+                    cells.append(f"{r['median_rank_method']:.0f} · identical to baseline")
+                else:
+                    cells.append(f"{r['median_rank_method']:.0f} · "
+                                 f"{r['win_rate_excl_ties']*100:.0f}% · {r['wilcoxon_p']:.1e}")
             P(f"| `{key}` | " + " | ".join(cells) + " |")
         P()
         P("Read against the win rates, the top-1 numbers are less impressive than they look.")
@@ -255,11 +288,33 @@ def main():
         P("misses are more adversarial than random — when it retrieves the wrong neighbours it")
         P("retrieves genes that are genuinely confusable with the target, not arbitrary ones.")
         P()
+        # per line: on how many real rows does the combiner beat the sweep's at matched recall?
+        beat = {}
+        for dsx in ds_list:
+            if dsx not in curve["datasets"]:
+                continue
+            sw = sweep_of(dsx)
+            n_b = n_t = 0
+            for k2, v in curve["datasets"][dsx]["real"].items():
+                if v["knn_avg"]["top1"] < 0.005:
+                    continue
+                near = min(sw, key=lambda w: abs(w["recall_at_k"] - v["recall_at_k"]))
+                gr, gsw = gain_of(v), gain_of(near)
+                if gr == gr and gsw == gsw:
+                    n_t += 1
+                    n_b += gr > gsw
+            beat[dsx] = (n_b, n_t)
         if len(dirs) >= 2 and not (all(v > 0 for v in dirs.values()) or all(v < 0 for v in dirs.values())):
             P("**One reading does not.** Whether the *combiner* does better on a real")
-            P("representation than on a matched corruption goes opposite ways on the two lines")
-            P("(" + ", ".join(f"{SHORT.get(d,d)} {'better' if v > 0 else 'worse'} by {abs(v):.2f}×"
-                              for d, v in dirs.items()) + "). A tempting story — that real")
+            P("representation than on a matched corruption goes opposite ways on the two lines:")
+            P("the real representation's ridge gain beats the sweep's on "
+              + " and ".join(f"{b} of {t} {SHORT.get(d,d)} rows" for d, (b, t) in beat.items())
+              + ". For GO alone that is "
+              + "; ".join(f"{SHORT.get(d,d)} {gain_of(curve['datasets'][d]['real']['go_jaccard']):.2f}× vs "
+                          f"{gain_of(min(sweep_of(d), key=lambda w: abs(w['recall_at_k'] - curve['datasets'][d]['real']['go_jaccard']['recall_at_k']))):.2f}×"
+                          for d in dirs) + ".")
+            P("(On RPE1 three of the four rows are the same ranking, because the learned")
+            P("combinations put all their weight on GO.) A tempting story — that real")
             P("mistakes are *redundant*, retrieving several members of one complex, which is exactly")
             P("the structure G⁻¹ deconvolves — fits K562 and is refuted by RPE1. So it is recorded")
             P("as unexplained rather than asserted, and the isotropic sweep is not a reliable")
@@ -272,15 +327,30 @@ def main():
         P("What *is* consistent: the combiner's large gains need high ordering quality. It reaches")
         P(", ".join(f"{gain_of(sweep_of(d)[-1]):.1f}× on {SHORT.get(d,d)}" for d in ds_list
                     if d in curve["datasets"]) + " at the oracle, against 1.1–2.1× on any")
-        P("available representation, and the ridge solve can even fall *below* plain averaging at")
-        P("middling quality because it amplifies whatever ordering it is handed.")
+        P("available representation.")
         P()
         P("That is the specification this section buys. A gene representation for this task needs")
         P("**top-k neighbour recall**, not global correlation, and it needs **calibrated**")
         P("similarity magnitudes: kNN reads only the ordering, but the ridge solve reads")
-        P("b = s(g,j)‖y_j‖ as a magnitude, and standardising the similarity alone costs about a")
-        P("fifth of the combiner's value. So it should be trained on a top-k ranking objective")
-        P("with calibrated scores, not fitted to reproduce the whole similarity matrix.")
+        cal_p = os.path.join(A, "repr_curve", "calibration.json")
+        cal = json.load(open(cal_p)) if os.path.exists(cal_p) else {"datasets": {}}
+        if cal["datasets"]:
+            parts = []
+            for d, v in cal["datasets"].items():
+                c, zz = v["calibrated_cosine"], v["standardised"]
+                parts.append(f"{SHORT.get(d,d)} {c['gls']['top1']*100:.1f}% → {zz['gls']['top1']*100:.1f}% "
+                             f"(−{v['gls_fraction_lost_to_standardising']*100:.0f}%) with kNN unchanged to "
+                             f"{v['knn_agrees_to']*100:.2f} points")
+            P("b = s(g,j)‖y_j‖ as a magnitude. Measured on the oracle similarity, standardising it —")
+            P("same ordering, different magnitudes — moves the ridge combiner's top-1 "
+              + "; ".join(parts) + ".")
+            P("So it should be trained on a top-k ranking objective with calibrated scores, not")
+            P("fitted to reproduce the whole similarity matrix.")
+        else:
+            P("b = s(g,j)‖y_j‖ as a magnitude, so an uncalibrated similarity loses part of the")
+            P("combiner's value even with a perfect ordering (`./submit.sh reprcalib` measures how")
+            P("much). So it should be trained on a top-k ranking objective with calibrated scores,")
+            P("not fitted to reproduce the whole similarity matrix.")
         P()
     return 0
 

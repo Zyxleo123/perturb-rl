@@ -82,6 +82,52 @@ def zsym(M, rng=None, K=None):
     return out.astype(np.float32)
 
 
+def calibration_ablation(ds, cache_path, gears_dir, knn):
+    """The oracle similarity two ways: raw cosine, and standardised (z-scored over the
+    off-diagonal). Same ordering, so kNN -- which reads only the ordering -- must agree;
+    the ridge solve reads b = s(g,j)||y_j|| as a MAGNITUDE, so any gap between the two
+    gls numbers is the value of calibration alone. Same (m, lambda) grid and folds as the
+    curve, so this is the same measurement as its alpha = 1 point."""
+    W = RA.World(cache_path)
+    K = W.K
+    D = RH.build(ds, os.path.join(gears_dir, ds, "perturb_processed.h5ad"),
+                 np.random.default_rng(RH.SEED))
+    mk = D["mask"]
+    if not (list(D["cands"]) == [str(x) for x in W.cands]
+            and np.allclose(D["dF"][:, mk], W.Y, atol=1e-6)):
+        raise RuntimeError("rl_headroom.build no longer reproduces the cache; refusing to mix")
+    YA = D["dA"][:, mk].astype(np.float32)
+    del D
+    YAu = RH.unit(YA)
+    Csig = (YAu @ YAu.T).astype(np.float32)
+    G = YA.astype(np.float64) @ YA.astype(np.float64).T
+    nrm = np.sqrt(np.maximum(np.diag(G), 1e-24))
+    Qu = RH.unit(W.Q)
+    own = W.owner.astype(np.int64)
+    folds = RH.folds_of(K, np.random.default_rng(SEED), k=N_FOLDS)
+    val_fold = {f: (f + 1) % N_FOLDS for f in range(N_FOLDS)}
+    out = {}
+    for tag, S0 in (("calibrated_cosine", Csig), ("standardised", zsym(Csig))):
+        S = S0.copy()
+        np.fill_diagonal(S, -np.inf)
+        Pk = RP.knn_from_sim(S, YA, k=knn)
+        mk_, _, _ = RP.score_matrix((Qu @ RH.unit(Pk).T).astype(np.float32), own)
+        Pg, picked = RS.tune(lambda p: RS.predict_gls(S, YA, G, p[0], p[1], nrm),
+                             [(m_, l_) for m_ in M_GRID for l_ in LAM_GRID],
+                             YA, Qu, own, K, folds, val_fold)
+        mg, _, _ = RP.score_matrix((Qu @ RH.unit(Pg).T).astype(np.float32), own)
+        out[tag] = {"knn_avg": mk_, "gls": mg,
+                    "gls_m_lambda": sorted({str(v) for v in picked.values()})}
+        log(f"  [{ds}] {tag:18s} knn top1={mk_['top1']*100:5.2f}%  gls top1={mg['top1']*100:5.2f}%")
+    c, z = out["calibrated_cosine"], out["standardised"]
+    out["knn_agrees_to"] = abs(c["knn_avg"]["top1"] - z["knn_avg"]["top1"])
+    out["gls_fraction_lost_to_standardising"] = (
+        1.0 - z["gls"]["top1"] / c["gls"]["top1"] if c["gls"]["top1"] > 0 else float("nan"))
+    log(f"  [{ds}] kNN agrees to {out['knn_agrees_to']*100:.2f} points; standardising loses "
+        f"{out['gls_fraction_lost_to_standardising']*100:.1f}% of the ridge combiner's top-1")
+    return out
+
+
 def run(ds, cache_path, priors_path, gears_dir, out_dir, knn):
     W = RA.World(cache_path)
     K = W.K
@@ -110,9 +156,10 @@ def run(ds, cache_path, priors_path, gears_dir, out_dir, knn):
     Ez = zsym(None, rng, K)
     # Put the sweep back on C_sig's own scale. kNN reads only the ORDERING, but the ridge
     # solve reads b = s(g,j)||y_j|| as a magnitude, so a standardised similarity is a
-    # different b and alpha=1 would not reproduce the oracle. Measured: without this,
-    # alpha=1 gives gls 34.3% against repr_select's 44.4% while knn_avg matches to 0.05
-    # points -- i.e. a fifth of the combiner's value is lost to miscalibration alone.
+    # different b and alpha=1 would not reproduce the oracle. Measured reproducibly by
+    # calibration_ablation() (`./submit.sh reprcalib`): standardising the oracle similarity
+    # costs the ridge combiner 24% of its top-1 on K562 (44.4 -> 33.8%) and 42% on RPE1
+    # (48.3 -> 27.8%), while kNN -- which reads only the ordering -- moves 0.05 / 0.26 points.
     iu0 = np.triu_indices(K, 1)
     c_mu, c_sd = float(Csig[iu0].mean()), float(Csig[iu0].std())
 
@@ -197,9 +244,27 @@ def main():
     ap.add_argument("--gears-dir", required=True)
     ap.add_argument("--datasets", nargs="+", required=True)
     ap.add_argument("--knn", type=int, default=10)
+    ap.add_argument("--calibration-only", action="store_true",
+                    help="run only the calibration ablation -> repr_curve/calibration.json")
     a = ap.parse_args()
 
     out_dir = os.path.join(a.art_dir, "repr_curve")
+    if a.calibration_only:
+        os.makedirs(out_dir, exist_ok=True)
+        check = json.load(open(os.path.join(a.art_dir, "rl_acquire", "cache_check.json")))
+        cal = {"knn": a.knn, "datasets": {}, "errors": []}
+        for ds in a.datasets:
+            try:
+                cal["datasets"][ds] = calibration_ablation(
+                    ds, check["datasets"][ds]["path"], a.gears_dir, a.knn)
+            except Exception as e:
+                cal["errors"].append({"dataset": ds, "error": f"{type(e).__name__}: {e}"})
+                log(f"{ds}: calibration FAILED {type(e).__name__}: {e}")
+                traceback.print_exc()
+        with open(os.path.join(out_dir, "calibration.json"), "w") as f:
+            json.dump(cal, f, indent=2)
+        log("wrote", os.path.join(out_dir, "calibration.json"))
+        return 0
     os.makedirs(out_dir, exist_ok=True)
     check = json.load(open(os.path.join(a.art_dir, "rl_acquire", "cache_check.json")))
     rel = os.path.join(a.art_dir, "rl_acquire", "related")
