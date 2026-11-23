@@ -192,20 +192,34 @@ def run(ds, cache_path, priors_path, gears_dir, out_dir, knn):
     log("  duplicate (mean-imputed) kernel rows: "
         + ", ".join(f"{k}={v*100:.1f}%" for k, v in imputed.items()))
 
-    prior_views = []
+    prior_views, meas_views = [], []
     for i, nm in enumerate(pnames):
-        if nm in RD.MEASUREMENT_KERNELS:           # another line's MEASUREMENT, not a prior
-            continue
         v = RD.cosnorm(z["kernels"][i].astype(np.float64))
         np.fill_diagonal(v, 0.0)
         views[nm] = v
-        prior_views.append(nm)
+        (meas_views if nm in RD.MEASUREMENT_KERNELS else prior_views).append(nm)
     names = ["go_jaccard", "go_idf", "go_emb"] + prior_views
     Slearn, Wts = RD.learned_similarity([views[n] for n in names], Csig, folds, K,
                                         np.random.default_rng(SEED))
     log(f"  learned similarity over {len(names)} prior views (no measurement kernels)")
 
     sources = {"oracle": Csig.copy(), "learned": Slearn, "go": Jg.astype(np.float32)}
+
+    # The one view that beat GO in repr_predict was the OTHER CELL LINE's measured
+    # Perturb-seq. It answers "has this gene been measured somewhere else?", which is
+    # gap 0's unseen-CONTEXT axis rather than unseen-gene, so it is reported apart --
+    # but it is the only realistic similarity whose ordering quality is high enough for
+    # the combiner to have something to amplify, which is exactly what this tests.
+    Wall = np.zeros((0, 0))
+    if meas_views:
+        names_x = ["go_jaccard", "go_idf", "go_emb"] + prior_views + meas_views
+        Sall, Wall = RD.learned_similarity([views[n] for n in names_x], Csig, folds, K,
+                                           np.random.default_rng(SEED))
+        np.fill_diagonal(Sall, 0.0)
+        sources["xline"] = views[meas_views[0]].copy()
+        sources["learned_xline"] = Sall
+        log(f"  cross-line measurement view: {meas_views[0]} "
+            f"({imputed[meas_views[0]]*100:.1f}% of its rows mean-imputed)")
     for S in sources.values():
         np.fill_diagonal(S, -np.inf)
 
@@ -244,9 +258,11 @@ def run(ds, cache_path, priors_path, gears_dir, out_dir, knn):
     np.savez_compressed(os.path.join(out_dir, f"result_{ds}.npz"),
                         cands=np.array([str(x) for x in W.cands]),
                         view_names=np.array(names), learned_weights=Wts.astype(np.float32),
+                        learned_weights_xline=Wall.astype(np.float32),
                         **{f"rank_{k}": v.astype(np.float32) for k, v in preds.items()})
     return {"dataset": ds, "K": int(K), "knn": int(knn), "n_queries": int(Qu.shape[0]),
-            "views": names, "imputed_kernel_row_fraction": imputed, "results": res}
+            "views": names, "measurement_views": meas_views,
+            "imputed_kernel_row_fraction": imputed, "results": res}
 
 
 def main():
@@ -283,7 +299,9 @@ def main():
     L = ["# Unseen-gene retrieval: ranking the neighbours vs combining them", "",
          "Rows are `similarity source` x `combiner`. `knn_avg` is the predictor every",
          "number in GAPS.md uses. Hyper-parameters are chosen on a different fold of genes",
-         "than the one being predicted.", ""]
+         "than the one being predicted. `*` marks a row that uses a MEASUREMENT of",
+         "perturbation effect -- the held-out gene's own, or the other cell line's --",
+         "rather than prior knowledge alone.", ""]
     for ds, s in summary["datasets"].items():
         L += [f"## {ds} (K={s['K']}, {s['n_queries']} queries)", "",
               "| similarity | combiner | top-1 | top-10 | MRR | median rank |",
@@ -291,6 +309,8 @@ def main():
         for k, v in s["results"].items():
             src, comb = k.split("__", 1)
             m = v["metrics"]
+            if src in ("oracle", "xline", "learned_xline", "ceiling"):
+                src += "*"
             L.append(f"| {src} | {comb} | {m['top1']*100:.1f}% | {m['top10']*100:.1f}% "
                      f"| {m['mrr']:.3f} | {m['median_rank']:.0f} |")
         L.append("")
