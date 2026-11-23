@@ -26,6 +26,9 @@
 #   ./submit.sh story                # gap/improvement case studies: data (CPU) -> fig18-fig21
 #   ./submit.sh storyfigs            # redraw fig18-fig21 from artifacts/story/ only (cheap)
 #   ./submit.sh paperfigs            # re-render fig13/15/16/17 in the fig18-21 journal style (cheap)
+#   ./submit.sh reprprobe            # why the unseen-gene predictor fails: class ceiling / GO ordering / geometry
+#   ./submit.sh reprpred             # swap the predictor's gene representation: priors vs GO vs learned
+#   ./submit.sh reprsel              # ranking neighbours vs combining them: knn average vs ridge vs MMR
 #   FETCH_PDG_CHEMICAL=1 ./submit.sh # also pull the 37 GB chemical tarball
 set -euo pipefail
 
@@ -54,7 +57,7 @@ export PJ_RL_RANDOM_ONLY='${PJ_RL_RANDOM_ONLY:-}'
 EOF
 # RL-acquisition knobs: write ONLY the ones set here, so env/common.sh stays the
 # single source of their defaults (an empty export would override a default).
-for v in PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS PJ_RLA_PER_TASK PJ_RLA_MAXPAR \
+for v in PJ_REPR_KNN PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS PJ_RLA_PER_TASK PJ_RLA_MAXPAR \
          PJ_RLA_SMOKE PJ_RLA_FORCE PJ_RLA_PPO_ITERS PJ_RLA_PPO_UNIV PJ_RLA_PPO_GROUP \
          PJ_RLA_PPO_EPOCHS PJ_RLA_PPO_LR PJ_RLA_PPO_ENT PJ_RLA_NVAL PJ_RLA_VAL_EVERY \
          PJ_RLA_PG_ITERS PJ_RLA_CRITIC_UNIV PJ_RLA_CRITIC_EPOCHS \
@@ -255,6 +258,27 @@ if [ "$STAGE" = "paperfigs" ]; then
   # saved artifacts only (so every figure in a write-up looks the same). Cheap.
   ID[paperfigs]=$(sub "$J/48_paper_figs.sbatch")
   printf '  %-10s %s\n' paperfigs "${ID[paperfigs]}"
+fi
+
+if [ "$STAGE" = "reprprobe" ]; then
+  # Failure anatomy of the unseen-gene predictor: predictor-class ceiling vs GO's
+  # ordering vs scoring geometry. Reads the RL cache + the GEARS h5ad only. CPU.
+  ID[reprprobe]=$(sub "$J/50_repr_probe.sbatch")
+  printf '  %-10s %s\n' reprprobe "${ID[reprprobe]}"
+fi
+
+if [ "$STAGE" = "reprpred" ]; then
+  # Swap the unseen-gene predictor's similarity: GO Jaccard vs IterPert's released
+  # multimodal priors vs a learned out-of-fold combination, against the ceilings.
+  ID[reprpred]=$(sub "$J/51_repr_predict.sbatch")
+  printf '  %-10s %s\n' reprpred "${ID[reprpred]}"
+fi
+
+if [ "$STAGE" = "reprsel" ]; then
+  # Ranking the neighbours vs combining them: {GO, learned priors, oracle} x
+  # {knn average, ridge over the atlas Gram, MMR}, hyper-parameters chosen out of fold.
+  ID[reprsel]=$(sub "$J/52_repr_select.sbatch")
+  printf '  %-10s %s\n' reprsel "${ID[reprsel]}"
 fi
 
 if [ "$STAGE" = "genfigs" ]; then
