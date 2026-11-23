@@ -72,7 +72,11 @@ neighbours — a closed-form ridge against the atlas Gram, which is measured, so
 redundancy is known without knowing the answer — is worth **3.4–3.6×** given a good
 similarity (12.5% → 44.4%, 14.1% → 48.3%). On any real representation it only *trades*:
 top-1 rises 1.1–2.1× on all six real rows, but median rank gets worse on five of them,
-so it is not a free improvement at today's representations. And a gene
+so it is not a free improvement at today's representations. That shortfall sits in
+estimating inner products, not in choosing neighbours: handed the true inner products,
+GO's own 100-gene neighbourhood reaches **38.2% / 41.1%** — 86% / 85% of the oracle.
+Learning them from pair features reaches 6.5% on K562 (2.2× GO-kNN, paired p = 4e-19)
+but does not replicate on RPE1, where it is worse than GO-kNN on rank. And a gene
 unseen in *this* cell line but measured in another is identifiable **2–3× better than GO
 manages**, paired within the genes the other line actually covers (top-1 2.1% → 6.1% on
 RPE1, 2.4% → 4.0% on K562). That is gap 0's unseen-*context* axis doing the work, which
@@ -1033,11 +1037,67 @@ b = s(g,j)‖y_j‖ as a magnitude. Measured on the oracle similarity, standardi
 same ordering, different magnitudes — moves the ridge combiner's top-1 K562 44.4% → 33.8% (−24%) with kNN unchanged to 0.05 points; RPE1 48.3% → 27.8% (−42%) with kNN unchanged to 0.26 points.
 So it should be trained on a top-k ranking objective with calibrated scores, not
 fitted to reproduce the whole similarity matrix.
+
+### The combiner reads inner products; the shortfall is estimating them
+
+The ridge solve needs b_j = ⟨y_j, y_g⟩. Every row above plugs in b_j = s(g,j)‖y_j‖ for
+some similarity s. For the oracle s is the in-line cosine, so the plug-in *is* the true b
+up to the per-row constant ‖y_g‖, which cancels in a cosine — the oracle row is not a
+better ranking, it is the combiner handed an exact b. That makes neighbourhood choice and
+b estimation separable, so `scripts/repr_gram.py`'s first part runs the 2×2: each
+source's own neighbourhood, with its plug-in b and with the measured b (which cheats,
+and is there only to bound what fixing b could buy). The unclipped oracle plug-in and
+the measured b are asserted to agree, as the algebra requires.
+
+| neighbourhood from | b | K562 top-1 | RPE1 top-1 |
+|---|---|---:|---:|
+| GO Jaccard | plug-in | 3.3% | 1.8% |
+| GO Jaccard | measured\* | **38.2%** | **41.1%** |
+| learned priors | plug-in | 3.8% | 1.8% |
+| learned priors | measured\* | 40.8% | 41.1% |
+| other line's Perturb-seq\* | plug-in | 4.9% | 3.5% |
+| other line's Perturb-seq\* | measured\* | 37.0% | 39.9% |
+| true signature cosine\* | plug-in | 44.4% | 48.3% |
+| true signature cosine\* | measured\* | 44.4% | 48.3% |
+
+**GO's own neighbourhood, given the true inner products, reaches 38.2% on K562 and 41.1% on RPE1** — 86% and 85% of the oracle. GO ranks a gene's
+top ten badly (recall@10 14% on K562, 10% on RPE1), but the pool it hands the solve already contains
+almost everything the oracle uses. The pool size is chosen out of fold, and it is
+telling: given the true b the solve takes m = 100 in every fold on both lines,
+given GO's plug-in b it takes m = 10 or 25 in 9 of 10 folds -- with a poor b it can only
+afford to trust a few neighbours. So the shortfall is not which genes to look at but
+how much each one counts: **estimating b inside a GO-chosen pool**, a narrower target
+than "find a better similarity".
+
+The method follows: regress the in-line cosine on pair features (every prior view,
+its rank in the row and in the column, the atlas gene's norm and split-half
+reliability, and — in the second arm — the other line's cosine and its coverage),
+fitted out of fold over genes on the top of each gene's ordering plus a random tail.
+`iso` is the control: a strictly monotone recalibration of one similarity, which keeps
+its neighbour set and changes only magnitudes.
+
+| | K562 top-1 | RPE1 top-1 | K562 vs GO-kNN, paired over genes | RPE1 vs GO-kNN, paired over genes |
+|---|---:|---:|---|---|
+| GO-kNN (the gap-0 predictor) | 2.9% | 1.5% | — | — |
+| other line's Perturb-seq, plug-in b\* | 4.9% | 3.5% | win 53%, p = 2e-02 better | win 49%, p = 3e-04 **worse** |
+| learned b, prior views only | 3.5% | 1.7% | win 50%, p = 6e-01 n.s. | win 37%, p = 5e-30 **worse** |
+| other line's Perturb-seq, recalibrated b\* | 5.5% | 2.2% | win 53%, p = 6e-02 n.s. | win 46%, p = 5e-07 **worse** |
+| learned b, with the other line\* | 6.5% | 2.3% | win 61%, p = 4e-19 better | win 38%, p = 1e-30 **worse** |
+
+**Learning b helps on K562 and does not replicate on RPE1.** 
+On K562 it is the best realistic row in this file, 6.5% top-1 against GO-kNN's 2.9%.
+On RPE1 it is worse than GO-kNN on rank and worse than simply plugging in the other line's similarity (2.3% vs 3.5%).
+The b-quality diagnostic says why, measured where the solve reads it (Pearson with the
+true b inside each gene's neighbourhood): learning b moves it K562 0.51 → 0.70; RPE1 0.77 → 0.79.
+Where the regression barely improves b, it still reshuffles the ranking, and loses.
+This is reported as a K562 observation, not a method.
 <!-- repr-generated: end -->
 
-Reproduce the whole chain with `./submit.sh repr` (probe → pred → sel → curve →
-figs, all CPU, ~45 min) → `artifacts/repr_{probe,predict,select,curve}/` and fig22.
-Individual stages: `reprprobe`, `reprpred`, `reprsel`, `reprcurve`, `reprfigs`.
+Reproduce the whole chain with `./submit.sh repr` (probe → pred → sel → {curve, calib,
+gram} → figs, all CPU, ~1.5 h) → `artifacts/repr_{probe,predict,select,curve,gram}/` and
+fig22, then `python3 scripts/repr_splice.py` regenerates this section's generated block.
+Individual stages: `reprprobe`, `reprpred`, `reprsel`, `reprcurve`, `reprcalib`,
+`reprgram`, `reprfigs`; `recon` re-checks a per-gene reconciliation failure.
 
 ---
 

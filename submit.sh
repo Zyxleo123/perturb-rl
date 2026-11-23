@@ -26,13 +26,15 @@
 #   ./submit.sh story                # gap/improvement case studies: data (CPU) -> fig18-fig21
 #   ./submit.sh storyfigs            # redraw fig18-fig21 from artifacts/story/ only (cheap)
 #   ./submit.sh paperfigs            # re-render fig13/15/16/17 in the fig18-21 journal style (cheap)
-#   ./submit.sh repr                 # the whole representation-anatomy chain: probe -> pred -> sel -> curve -> figs
+#   ./submit.sh repr                 # the whole representation-anatomy chain: probe -> pred -> sel -> {curve, calib, gram} -> figs
 #   ./submit.sh reprprobe            # why the unseen-gene predictor fails: class ceiling / GO ordering / geometry
 #   ./submit.sh reprpred             # swap the predictor's gene representation: priors vs GO vs learned
 #   ./submit.sh reprsel              # ranking neighbours vs combining them: knn average vs ridge vs MMR
 #   ./submit.sh reprcurve            # how good must a representation be? similarity quality -> retrieval
 #   ./submit.sh reprfigs             # fig22 + paired significance tests, from saved artifacts (cheap)
 #   ./submit.sh reprcalib            # calibration ablation: oracle similarity raw vs standardised
+#   ./submit.sh reprgram             # estimate the combiner's inner-product input b instead of plugging it in
+#   ./submit.sh recon                # bisect a reconciliation failure: two code paths + the artifact on disk
 #     then: python3 scripts/repr_splice.py   # regenerate GAPS.md's repr block from the artifacts (login node, no compute)
 #   FETCH_PDG_CHEMICAL=1 ./submit.sh # also pull the 37 GB chemical tarball
 set -euo pipefail
@@ -274,10 +276,12 @@ if [ "$STAGE" = "repr" ]; then
   ID[reprsel]=$(sub "$J/52_repr_select.sbatch" "--dependency=afterok:${ID[reprpred]}")
   ID[reprcurve]=$(sub "$J/53_repr_curve.sbatch" "--dependency=afterok:${ID[reprsel]}")
   ID[reprcalib]=$(sub "$J/55_repr_calib.sbatch")
+  # repr_gram reconciles against repr_select's saved per-gene ranks, so it follows reprsel
+  ID[reprgram]=$(sub "$J/56_repr_gram.sbatch" "--dependency=afterok:${ID[reprsel]}")
   ID[reprfigs]=$(sub "$J/54_repr_figs.sbatch" "--dependency=afterany:${ID[reprcurve]}:${ID[reprcalib]}")
   printf '  %-10s %s\n' reprprobe "${ID[reprprobe]}" reprpred "${ID[reprpred]}" \
          reprsel "${ID[reprsel]}" reprcurve "${ID[reprcurve]}" reprcalib "${ID[reprcalib]}" \
-         reprfigs "${ID[reprfigs]}"
+         reprgram "${ID[reprgram]}" reprfigs "${ID[reprfigs]}"
 fi
 
 if [ "$STAGE" = "reprprobe" ]; then
@@ -313,6 +317,21 @@ if [ "$STAGE" = "reprcalib" ]; then
   # uncalibrated similarity to the ridge combiner is reproducible from saved data.
   ID[reprcalib]=$(sub "$J/55_repr_calib.sbatch")
   printf '  %-10s %s\n' reprcalib "${ID[reprcalib]}"
+fi
+
+if [ "$STAGE" = "reprgram" ]; then
+  # Estimate the combiner's inner-product input b instead of plugging in a similarity.
+  # Needs repr_select's result on disk: its two kNN rows are the reconciliation point.
+  ID[reprgram]=$(sub "$J/56_repr_gram.sbatch")
+  printf '  %-10s %s\n' reprgram "${ID[reprgram]}"
+fi
+
+if [ "$STAGE" = "recon" ]; then
+  # Bisect a reconciliation failure: build a retrieval row two ways in one process and
+  # compare every intermediate, then both against the artifact on disk. PJ_RECON_DS picks
+  # the dataset. Diagnostic only, writes nothing.
+  ID[recon]=$(sub "$J/57_recon_check.sbatch")
+  printf '  %-10s %s\n' recon "${ID[recon]}"
 fi
 
 if [ "$STAGE" = "reprfigs" ]; then

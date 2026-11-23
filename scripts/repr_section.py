@@ -20,6 +20,140 @@ def pct(x):
     return f"{x*100:.1f}%"
 
 
+def gram_section(A, ds_list, P):
+    """The b-estimation follow-up (scripts/repr_gram.py), from repr_gram/summary.json.
+
+    Every table is PER QUERY, GAPS.md's unit; repr_gram's own report also carries the
+    stricter per-gene numbers, and mixing the two is what once made its oracle row read
+    as a contradiction of this file. Verdicts are computed from both lines' paired tests,
+    not from the first line that looks good."""
+    p = os.path.join(A, "repr_gram", "summary.json")
+    if not os.path.exists(p):
+        return
+    g = json.load(open(p))
+    dl = [d for d in ds_list if d in g["datasets"]]
+    if not dl:
+        return
+
+    def q(d, k):
+        r = g["datasets"][d]["results"].get(k)
+        return r["metrics"]["top1"] if r else float("nan")
+
+    P("### The combiner reads inner products; the shortfall is estimating them")
+    P()
+    P("The ridge solve needs b_j = ⟨y_j, y_g⟩. Every row above plugs in b_j = s(g,j)‖y_j‖ for")
+    P("some similarity s. For the oracle s is the in-line cosine, so the plug-in *is* the true b")
+    P("up to the per-row constant ‖y_g‖, which cancels in a cosine — the oracle row is not a")
+    P("better ranking, it is the combiner handed an exact b. That makes neighbourhood choice and")
+    P("b estimation separable, so `scripts/repr_gram.py`'s first part runs the 2×2: each")
+    P("source's own neighbourhood, with its plug-in b and with the measured b (which cheats,")
+    P("and is there only to bound what fixing b could buy). The unclipped oracle plug-in and")
+    P("the measured b are asserted to agree, as the algebra requires.")
+    P()
+    P("| neighbourhood from | b | " + " | ".join(f"{SHORT.get(d,d)} top-1" for d in dl) + " |")
+    P("|---|---|" + "---:|" * len(dl))
+    for src, lab in (("go", "GO Jaccard"), ("learned", "learned priors"),
+                     ("xline", "other line's Perturb-seq\\*"), ("oracle", "true signature cosine\\*")):
+        for bn, blab in (("plugin", "plug-in"), ("true_b", "measured\\*")):
+            k = f"{src}__gls_{bn}"
+            if any(k in g["datasets"][d]["results"] for d in dl):
+                b = "**" if (src, bn) == ("go", "true_b") else ""
+                P(f"| {lab} | {blab} | " + " | ".join(f"{b}{q(d,k)*100:.1f}%{b}" for d in dl) + " |")
+    P()
+    fr = [q(d, "go__gls_true_b") / q(d, "oracle__gls_plugin") for d in dl]
+
+    def ms(d, k):
+        cp = g["datasets"][d]["results"][k]["chosen_per_fold"].values()
+        return sorted({int(str(v).strip("()").split(",")[0]) for v in cp})
+    m_true = sorted({m for d in dl for m in ms(d, "go__gls_true_b")})
+    m_plug = sorted({m for d in dl for m in ms(d, "go__gls_plugin")})
+    allm = [int(str(v).strip("()").split(",")[0]) for d in dl
+            for v in g["datasets"][d]["results"]["go__gls_plugin"]["chosen_per_fold"].values()]
+    small = sum(m < max(allm + [100]) for m in allm)
+    small_ms = " or ".join(str(m) for m in sorted({m for m in allm if m < max(allm + [100])}))
+    pr = os.path.join(A, "repr_probe", "summary.json")
+    rec = (json.load(open(pr)) if os.path.exists(pr) else {"datasets": {}})["datasets"]
+    rtxt = ", ".join(f"{rec[d]['go_vs_signature']['recall_at_10']*100:.0f}% on {SHORT.get(d,d)}"
+                     for d in dl if d in rec)
+    P(f"**GO's own neighbourhood, given the true inner products, reaches "
+      + " and ".join(f"{q(d,'go__gls_true_b')*100:.1f}% on {SHORT.get(d,d)}" for d in dl)
+      + "** — " + " and ".join(f"{f*100:.0f}%" for f in fr) + " of the oracle. GO ranks a gene's")
+    P(f"top ten badly (recall@10 {rtxt}), but the pool it hands the solve already contains")
+    P("almost everything the oracle uses. The pool size is chosen out of fold, and it is")
+    P(f"telling: given the true b the solve takes m = {'/'.join(map(str, m_true))} in every fold on both lines,")
+    P(f"given GO's plug-in b it takes m = {small_ms} in {small} of {len(allm)} folds -- with a poor b it can only")
+    P("afford to trust a few neighbours. So the shortfall is not which genes to look at but")
+    P("how much each one counts: **estimating b inside a GO-chosen pool**, a narrower target")
+    P('than "find a better similarity".')
+    P()
+
+    # part 2: the method
+    P("The method follows: regress the in-line cosine on pair features (every prior view,")
+    P("its rank in the row and in the column, the atlas gene's norm and split-half")
+    P("reliability, and — in the second arm — the other line's cosine and its coverage),")
+    P("fitted out of fold over genes on the top of each gene's ordering plus a random tail.")
+    P("`iso` is the control: a strictly monotone recalibration of one similarity, which keeps")
+    P("its neighbour set and changes only magnitudes.")
+    P()
+    rows = [("go__knn_avg", "GO-kNN (the gap-0 predictor)"),
+            ("xline__gls_plugin", "other line's Perturb-seq, plug-in b\\*"),
+            ("prior_learned__gls", "learned b, prior views only"),
+            ("xline_iso__gls", "other line's Perturb-seq, recalibrated b\\*"),
+            ("xline_learned__gls", "learned b, with the other line\\*")]
+    P("| | " + " | ".join(f"{SHORT.get(d,d)} top-1" for d in dl) + " | "
+      + " | ".join(f"{SHORT.get(d,d)} vs GO-kNN, paired over genes" for d in dl) + " |")
+    P("|---|" + "---:|" * len(dl) + "---|" * len(dl))
+    for k, lab in rows:
+        cells = []
+        for d in dl:
+            pv = g["datasets"][d]["paired_vs_go_knn"].get(k, {}).get("all")
+            if pv is None:
+                cells.append("—")
+            else:
+                w_, p_ = pv["win_rate_excl_ties"], pv["wilcoxon_p"]
+                tag = (" **worse**" if w_ < 0.5 and p_ < 0.05 else
+                       " better" if w_ > 0.5 and p_ < 0.05 else " n.s.")
+                cells.append(f"win {w_*100:.0f}%, p = {p_:.0e}{tag}")
+        P(f"| {lab} | " + " | ".join(f"{q(d,k)*100:.1f}%" for d in dl) + " | "
+          + " | ".join(cells) + " |")
+    P()
+    # did the method replicate? decided from both lines, not the first that looks good
+    key = "xline_learned__gls"
+    verdict = {}
+    for d in dl:
+        pv = g["datasets"][d]["paired_vs_go_knn"].get(key, {}).get("all")
+        verdict[d] = bool(pv) and pv["win_rate_excl_ties"] > 0.5 and pv["wilcoxon_p"] < 0.05
+    bq = {d: (g["datasets"][d]["b_quality"].get("xline__plugin", {}).get("pearson_in_neighbourhood"),
+              g["datasets"][d]["b_quality"].get("xline_learned", {}).get("pearson_in_neighbourhood"))
+          for d in dl}
+    if all(verdict.values()):
+        P("**Learning b improves on GO-kNN on both lines**, paired over genes.")
+    else:
+        good = [SHORT.get(d, d) for d, v in verdict.items() if v]
+        bad = [SHORT.get(d, d) for d, v in verdict.items() if not v]
+        P(f"**Learning b helps on {', '.join(good) or 'neither line'} and does not replicate on "
+          f"{', '.join(bad)}.** ")
+        if good:
+            d0 = next(d for d in dl if verdict[d])
+            P(f"On {SHORT.get(d0,d0)} it is the best realistic row in this file, {q(d0,key)*100:.1f}% top-1 against "
+              f"GO-kNN's {q(d0,'go__knn_avg')*100:.1f}%.")
+        for d in dl:
+            if not verdict[d]:
+                P(f"On {SHORT.get(d,d)} it is worse than GO-kNN on rank and worse than simply plugging in "
+                  f"the other line's similarity ({q(d,key)*100:.1f}% vs {q(d,'xline__gls_plugin')*100:.1f}%).")
+        P("The b-quality diagnostic says why, measured where the solve reads it (Pearson with the")
+        P("true b inside each gene's neighbourhood): learning b moves it "
+          + "; ".join(f"{SHORT.get(d,d)} {a:.2f} → {b:.2f}" for d, (a, b) in bq.items() if a is not None)
+          + ".")
+        P("Where the regression barely improves b, it still reshuffles the ranking, and loses.")
+        P("This is reported as a K562 observation, not a method.")
+    P()
+    warns = [w for d in dl for w in g["datasets"][d].get("interpretation_warnings", [])]
+    if warns:
+        P("> **Caveat.** " + " ".join(warns))
+        P()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--art-dir", required=True)
@@ -352,6 +486,7 @@ def main():
             P("much). So it should be trained on a top-k ranking objective with calibrated scores,")
             P("not fitted to reproduce the whole similarity matrix.")
         P()
+    gram_section(A, ds_list, P)
     return 0
 
 

@@ -21,9 +21,11 @@ BEGIN = "<!-- repr-generated: begin -->"
 END = "<!-- repr-generated: end -->"
 OLD_REPRO = ("Reproduce with `./submit.sh reprprobe` and `./submit.sh reprpred` "
              "(both CPU, ~2 min each) →\n`artifacts/repr_probe/` and `artifacts/repr_predict/`.")
-NEW_REPRO = ("Reproduce the whole chain with `./submit.sh repr` (probe → pred → sel → curve →\n"
-             "figs, all CPU, ~45 min) → `artifacts/repr_{probe,predict,select,curve}/` and fig22.\n"
-             "Individual stages: `reprprobe`, `reprpred`, `reprsel`, `reprcurve`, `reprfigs`.")
+NEW_REPRO = ('Reproduce the whole chain with `./submit.sh repr` (probe → pred → sel → {curve, calib,\n'
+             'gram} → figs, all CPU, ~1.5 h) → `artifacts/repr_{probe,predict,select,curve,gram}/` and\n'
+             "fig22, then `python3 scripts/repr_splice.py` regenerates this section's generated block.\n"
+             'Individual stages: `reprprobe`, `reprpred`, `reprsel`, `reprcurve`, `reprcalib`,\n'
+             '`reprgram`, `reprfigs`; `recon` re-checks a per-gene reconciliation failure.')
 
 sec = subprocess.run([PY, "-I", f"{HOME}/scripts/repr_section.py", "--art-dir", ART],
                      capture_output=True, text=True, check=True).stdout.rstrip()
