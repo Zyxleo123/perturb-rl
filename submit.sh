@@ -29,6 +29,7 @@
 #   ./submit.sh reprprobe            # why the unseen-gene predictor fails: class ceiling / GO ordering / geometry
 #   ./submit.sh reprpred             # swap the predictor's gene representation: priors vs GO vs learned
 #   ./submit.sh reprsel              # ranking neighbours vs combining them: knn average vs ridge vs MMR
+#   ./submit.sh reprcurve            # how good must a representation be? similarity quality -> retrieval
 #   FETCH_PDG_CHEMICAL=1 ./submit.sh # also pull the 37 GB chemical tarball
 set -euo pipefail
 
@@ -279,6 +280,13 @@ if [ "$STAGE" = "reprsel" ]; then
   # {knn average, ridge over the atlas Gram, MMR}, hyper-parameters chosen out of fold.
   ID[reprsel]=$(sub "$J/52_repr_select.sbatch")
   printf '  %-10s %s\n' reprsel "${ID[reprsel]}"
+fi
+
+if [ "$STAGE" = "reprcurve" ]; then
+  # Similarity quality -> retrieval transfer function, so "get a better representation"
+  # becomes a number a future representation can be measured against.
+  ID[reprcurve]=$(sub "$J/53_repr_curve.sbatch")
+  printf '  %-10s %s\n' reprcurve "${ID[reprcurve]}"
 fi
 
 if [ "$STAGE" = "genfigs" ]; then
