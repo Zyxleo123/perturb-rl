@@ -199,12 +199,44 @@ def paired_stats(art, datasets, out_path):
                        "median_rank_baseline": float(np.median(base)),
                        "median_rank_method": float(np.median(v)),
                        "wilcoxon_p": float(pv)}
+        # The cross-line kernel is mean-imputed for genes the other line never measured
+        # (45% on RPE1, 0.6% on K562). If that is what drives RPE1's "top-1 up, median rank
+        # down" pattern, the effect must separate on exactly that mask -- so test it rather
+        # than assert it. The mask is recomputed from the aligned priors, no rerun needed.
+        pp = os.path.join(art, "rl_acquire", "related", f"priors_{ds}.npz")
+        if os.path.exists(pp) and "rank_xline__gls" in z.files:
+            zp = np.load(pp, allow_pickle=False)
+            pnames = [str(x) for x in zp["names"]]
+            mk = [n for n in pnames if n in ("rpe1_kernel", "k562_perturbseq_kernel")]
+            if mk:
+                R = zp["kernels"][pnames.index(mk[0])]
+                _, inv, cnt = np.unique(np.round(R, 5), axis=0,
+                                        return_inverse=True, return_counts=True)
+                imp = cnt[inv] > 1
+                strat = {}
+                for grp, sel_m in (("real_prior", ~imp), ("mean_imputed", imp)):
+                    if sel_m.sum() == 0:
+                        continue
+                    strat[grp] = {
+                        "n_genes": int(sel_m.sum()),
+                        "median_rank_go_knn": float(np.median(base[sel_m])),
+                        "median_rank_xline_gls": float(np.median(z["rank_xline__gls"][sel_m])),
+                        "top1_go_knn": float((base[sel_m] <= 1).mean()),
+                        "top1_xline_gls": float((z["rank_xline__gls"][sel_m] <= 1).mean())}
+                rows["_xline_by_prior_coverage"] = {"kernel": mk[0], "groups": strat}
         out["datasets"][ds] = rows
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2)
     print(f"[repr] wrote {out_path}")
     for ds, rows in out["datasets"].items():
         print(f"  {ds}: baseline median rank {list(rows.values())[0]['median_rank_baseline']:.0f}")
+        cov = rows.pop("_xline_by_prior_coverage", None)
+        if cov:
+            for g, v in cov["groups"].items():
+                print(f"    [{cov['kernel']} {g}] n={v['n_genes']:4d}  "
+                      f"medrank GO {v['median_rank_go_knn']:6.1f} -> xline+gls "
+                      f"{v['median_rank_xline_gls']:6.1f}   "
+                      f"top1 {v['top1_go_knn']*100:4.1f}% -> {v['top1_xline_gls']*100:4.1f}%")
         for k, v in sorted(rows.items(), key=lambda kv: kv[1]["median_rank_method"]):
             print(f"    {k:26s} medrank {v['median_rank_method']:6.1f}  "
                   f"win {v['win_rate_excl_ties']*100:5.1f}%  p={v['wilcoxon_p']:.2e}")

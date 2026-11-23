@@ -26,6 +26,7 @@
 #   ./submit.sh story                # gap/improvement case studies: data (CPU) -> fig18-fig21
 #   ./submit.sh storyfigs            # redraw fig18-fig21 from artifacts/story/ only (cheap)
 #   ./submit.sh paperfigs            # re-render fig13/15/16/17 in the fig18-21 journal style (cheap)
+#   ./submit.sh repr                 # the whole representation-anatomy chain: probe -> pred -> sel -> curve -> figs
 #   ./submit.sh reprprobe            # why the unseen-gene predictor fails: class ceiling / GO ordering / geometry
 #   ./submit.sh reprpred             # swap the predictor's gene representation: priors vs GO vs learned
 #   ./submit.sh reprsel              # ranking neighbours vs combining them: knn average vs ridge vs MMR
@@ -260,6 +261,19 @@ if [ "$STAGE" = "paperfigs" ]; then
   # saved artifacts only (so every figure in a write-up looks the same). Cheap.
   ID[paperfigs]=$(sub "$J/48_paper_figs.sbatch")
   printf '  %-10s %s\n' paperfigs "${ID[paperfigs]}"
+fi
+
+if [ "$STAGE" = "repr" ]; then
+  # The whole representation-anatomy chain, in order. Each stage gates on the artifact
+  # the previous one writes and exits 0 if it is missing, so a failure reports the gap
+  # rather than stranding its dependents.
+  ID[reprprobe]=$(sub "$J/50_repr_probe.sbatch")
+  ID[reprpred]=$(sub "$J/51_repr_predict.sbatch" "--dependency=afterok:${ID[reprprobe]}")
+  ID[reprsel]=$(sub "$J/52_repr_select.sbatch" "--dependency=afterok:${ID[reprpred]}")
+  ID[reprcurve]=$(sub "$J/53_repr_curve.sbatch" "--dependency=afterok:${ID[reprsel]}")
+  ID[reprfigs]=$(sub "$J/54_repr_figs.sbatch" "--dependency=afterany:${ID[reprcurve]}")
+  printf '  %-10s %s\n' reprprobe "${ID[reprprobe]}" reprpred "${ID[reprpred]}" \
+         reprsel "${ID[reprsel]}" reprcurve "${ID[reprcurve]}" reprfigs "${ID[reprfigs]}"
 fi
 
 if [ "$STAGE" = "reprprobe" ]; then

@@ -103,6 +103,13 @@ def run(ds, cache_path, priors_path, gears_dir, out_dir, knn):
 
     Cz = zsym(Csig)
     Ez = zsym(None, rng, K)
+    # Put the sweep back on C_sig's own scale. kNN reads only the ORDERING, but the ridge
+    # solve reads b = s(g,j)||y_j|| as a magnitude, so a standardised similarity is a
+    # different b and alpha=1 would not reproduce the oracle. Measured: without this,
+    # alpha=1 gives gls 34.3% against repr_select's 44.4% while knn_avg matches to 0.05
+    # points -- i.e. a fifth of the combiner's value is lost to miscalibration alone.
+    iu0 = np.triu_indices(K, 1)
+    c_mu, c_sd = float(Csig[iu0].mean()), float(Csig[iu0].std())
 
     def evaluate(S, tag):
         S = S.copy()
@@ -123,8 +130,11 @@ def run(ds, cache_path, priors_path, gears_dir, out_dir, knn):
 
     curve = {}
     for a in ALPHAS:
-        S = (a * Cz + np.sqrt(max(1.0 - a * a, 0.0)) * Ez).astype(np.float32)
+        S = (c_mu + c_sd * (a * Cz + np.sqrt(max(1.0 - a * a, 0.0)) * Ez)).astype(np.float32)
         curve[f"alpha={a:g}"] = evaluate(S, f"alpha={a:g}")
+    # reconciliation: alpha=1 must be the oracle row of repr_select
+    log(f"  alpha=1 reconciliation: gls top1={curve['alpha=1']['gls']['top1']*100:.2f}% "
+        f"(repr_select oracle__gls is the same measurement)")
 
     # ---- the real representations, placed on the same axes
     real = {}
