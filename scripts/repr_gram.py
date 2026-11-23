@@ -753,13 +753,17 @@ def run(ds, cache_path, priors_path, gears_dir, out_dir, knn):
 def write_report(summary, out_dir):
     """report.md from summary.json, so a presentation fix needs no recompute.
 
-    TWO units of top-1, labelled, because they differ by up to 9 points on the same row:
-    PER QUERY is the unit of every table in GAPS.md (a query is top-1 if its own gene
-    ranks first); PER GENE averages a gene's ~1.8 queries first and counts the gene only
-    if that mean rank is 1, which is stricter and is the unit the paired tests and the
-    coverage strata use. An earlier version of this report printed only the per-gene
+    TWO units of top-1, labelled, because they differ by up to 9.3 points on the same
+    row: PER QUERY is the unit of every table in GAPS.md (a query is top-1 if its own gene
+    ranks first); PER GENE averages a gene's queries first (~1.8 on K562, ~1.5 on RPE1)
+    and counts the gene only if that mean rank is 1. It weights genes, not queries, so it
+    is usually -- not always -- the lower of the two, and it is the unit the paired tests
+    and the coverage strata use. An earlier version of this report printed only the per-gene
     number under "top-1 all", so its 35.3% for the oracle row read as a contradiction of
     GAPS.md's 44.4% for the same measurement."""
+    gaps_ = [(v["metrics"]["top1"] - v["by_stratum"]["all"]["top1"]) * 100
+             for d_ in summary["datasets"].values() for v in d_["results"].values()]
+    span = f"by up to {max(gaps_):.1f} points here" if gaps_ else "on the same row"
     L = ["# The combiner's input is an inner product: estimate it instead of plugging it in",
          "",
          "`gls_plugin` is the `gls` row GAPS.md reports, b_j = s(g,j)||y_j|| (its per-query",
@@ -771,8 +775,9 @@ def write_report(summary, out_dir):
          "similarities instead of clipping them.",
          "",
          "**Two units of top-1.** *Per query* is GAPS.md's unit. *Per gene* averages a",
-         "gene's ~1.8 queries first and is stricter; it is the unit of the strata and the",
-         "paired tests. Do not compare a per-gene number with a GAPS.md table.",
+         "gene's queries first and weights genes rather than queries, so it usually comes",
+         f"out lower ({span}); it is the unit of the strata and the paired",
+         "tests. Do not compare a per-gene number with a GAPS.md table.",
          ""]
     for ds, s in summary["datasets"].items():
         L += [f"## {ds} (K={s['K']}, {s['n_queries']} queries, "

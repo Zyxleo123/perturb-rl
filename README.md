@@ -39,6 +39,10 @@ PJ_RLA_SMOKE=1 ./submit.sh rlacq_smoke   # 3-iteration code-path check, no repor
 PJ_REL_SMOKE=1 PJ_RLA_SPLITS=4 PJ_REL_SEEDS=0 ./submit.sh related_smoke   # every method once, 300 reward evals
 ./submit.sh story        # gap / improvement case studies: per-gene data (CPU, ~11 min) -> fig18-fig21
 ./submit.sh storyfigs    # redraw fig18-fig21 from artifacts/story/ only (cheap)
+./submit.sh paperfigs    # re-render fig13/15/16/17 in the fig18-21 journal style (cheap)
+./submit.sh repr         # why the unseen-gene predictor fails: probe -> pred -> sel -> {curve, calib, gram} -> fig22 (CPU, ~1.5 h)
+python3 scripts/repr_splice.py   # then regenerate GAPS.md's generated repr block from those artifacts (login node, no compute)
+./submit.sh recon        # re-check a per-gene reconciliation failure (diagnostic; writes nothing)
 squeue -u $USER -o '%.8i %.9P %.16j %.8T %.10M %R'
 ```
 
@@ -144,6 +148,15 @@ GPU in this pool (sm_70 v100 → sm_90 h200).
 | `45_related_run` | cpu, array | IterPert + its AL benchmark through IterPert's own code (blind); data valuation + exemplars (peek) |
 | `46_story_data` | cpu | case-study data: per-gene ranks, kNN neighbourhoods, greedy's per-step gains → `artifacts/story/`; reconciles with `records.jsonl` |
 | `47_story_figs` | cpu | fig18-fig21 from `artifacts/story/` only |
+| `48_paper_figs` | cpu | fig13/15/16/17 re-rendered in the fig18-21 journal style, from saved artifacts |
+| `50_repr_probe` | cpu | why GO-kNN fails on unseen genes: predictor-class ceilings, GO's neighbour ordering vs the true one, CSLS / hubness |
+| `51_repr_predict` | cpu | the predictor's similarity swapped for IterPert's 8 prior kernels, two richer GO views and a learned combination |
+| `52_repr_select` | cpu | ranking vs combining neighbours: kNN average, ridge over the atlas Gram, MMR; hyper-parameters out of fold |
+| `53_repr_curve` | cpu | similarity quality swept continuously -> retrieval; the real representations placed on the same axes |
+| `54_repr_figs` | cpu | fig22 + paired Wilcoxon over genes, from `artifacts/repr_*/` only |
+| `55_repr_calib` | cpu | calibration ablation: the oracle similarity raw vs standardised (same ordering, different magnitudes) |
+| `56_repr_gram` | cpu | estimate the combiner's inner products instead of plugging them in: neighbourhood x b 2x2, then a learned b |
+| `57_recon_check` | cpu | bisect a per-gene reconciliation failure and test whether it is a tie-boundary flip; writes nothing |
 | `30_figures` | cpu | aggregate figures, drawn from artifacts |
 | `31_case_studies` | cpu | named individual perturbations rather than metrics |
 | `33_generalization_figures` | cpu | redraw fig13-fig14 from `artifacts/generalization/` |
@@ -211,6 +224,13 @@ Two environment facts measured here, worth keeping: `unzip` is **not installed**
 compute nodes (extraction goes through `pj_unzip`, a python `zipfile` helper), and `du`
 misreports individual file sizes on this NFS mount (the summaries use `stat -c%s`).
 
+A third, measured 2026-11-23: `/zfsauton/scratch` is NFS v4 mounted with
+`acregmin=acdirmin=600`, so a file a compute node has just written can be **invisible on
+the login node for up to ten minutes** -- to `ls`, `stat` and any script alike. Reading a
+job's outputs right after it finishes can silently see nothing. Anything that consumes job
+artifacts on the login node must fail when an expected file is absent rather than fall
+back (`scripts/repr_splice.py` does), or run as a dependent job instead.
+
 ## Findings
 
 **[GAPS.md](GAPS.md)** — seven gaps ordered by headroom, each with its figure inline, plus
@@ -238,3 +258,17 @@ and cross-cell-line transfer is partly irreducible (disattenuated cross-context 
 median **0.42**). On the unseen-gene axis every cheap predictor — GO kNN, co-response kNN,
 the published linear baseline — sits at **0.8–1.9%** top-1 against a **32.5–88.9%**
 ceiling.
+
+The RL work on that axis -- choosing which genes to measure -- is in GAPS.md's "RL on the
+acquisition gap", "The blind regime" and "Related work on the same task".
+
+**Why the unseen-gene predictor fails** (GAPS.md "The unseen-gene gap is a combiner
+problem", fig22, `./submit.sh repr`). Not the predictor class: the same weighted average
+of measured signatures reaches **44.4% / 48.3%** top-1 (K562 / RPE1) given the true
+similarity and a ridge combiner, against GO-kNN's 2.9% / 1.5%. Not prior knowledge: of 20
+prior-only predictors, none beats GO-kNN on both top-1 and median rank on both lines. Not
+scoring geometry: CSLS, the standard hubness correction, does not help. The shortfall is
+estimating the inner products the combiner reads -- handed the true ones, GO's own
+neighbourhood reaches 85% of the oracle on both lines. The one realistic input that moves
+it is a measurement: a gene unseen in this line but measured in the other is identifiable
+**1.7–2.9×** better than GO manages, on the genes the other line covers.

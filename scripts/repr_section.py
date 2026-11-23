@@ -41,6 +41,10 @@ def gram_section(A, ds_list, P):
 
     P("### The combiner reads inner products; the shortfall is estimating them")
     P()
+    P("*All top-1 here is per query, this file's unit. `artifacts/repr_gram/report.md` also")
+    P("carries the stricter per-gene numbers; do not compare the two (see the evaluation")
+    P("traps at the end).*")
+    P()
     P("The ridge solve needs b_j = ⟨y_j, y_g⟩. Every row above plugs in b_j = s(g,j)‖y_j‖ for")
     P("some similarity s. For the oracle s is the in-line cosine, so the plug-in *is* the true b")
     P("up to the per-row constant ‖y_g‖, which cancels in a cosine — the oracle row is not a")

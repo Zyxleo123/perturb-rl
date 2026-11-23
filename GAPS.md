@@ -1044,6 +1044,10 @@ fitted to reproduce the whole similarity matrix.
 
 ### The combiner reads inner products; the shortfall is estimating them
 
+*All top-1 here is per query, this file's unit. `artifacts/repr_gram/report.md` also
+carries the stricter per-gene numbers; do not compare the two (see the evaluation
+traps at the end).*
+
 The ridge solve needs b_j = ⟨y_j, y_g⟩. Every row above plugs in b_j = s(g,j)‖y_j‖ for
 some similarity s. For the oracle s is the in-line cosine, so the plug-in *is* the true b
 up to the per-row constant ‖y_g‖, which cancels in a cosine — the oracle row is not a
@@ -1540,5 +1544,26 @@ against a stated floor, or correct work will read as failure.
 - **Ensembl vs gene name.** `uns['top_non_dropout_de_20']` stores Ensembl IDs while
   `adata.var` carries both `gene_id` and `gene_name`. Matching the wrong one empties every
   DE set and the probe still reports `status: ok` with zero rows.
+- **Two units of top-1.** Every table in this file counts top-1 *per query*: a query is a
+  hit if its own gene ranks first. Averaging a gene's queries first and counting the gene
+  only if that mean rank is 1 -- *per gene*, the unit of the paired tests and the coverage
+  strata -- weights genes instead of queries and usually comes out lower, by up to 9.3
+  points on the same row (the oracle combiner is 44.4% per query and 35.3% per gene on
+  K562); not always, since a gene with few queries counts as much as one with many. An unlabelled per-gene column once read as a
+  contradiction of this file; it was the same measurement, and all 14 shared rows
+  reconcile exactly per query. Label the unit on every top-1.
+- **Tie-aware ranks are not bit-reproducible across processes.** The metric rounds scores
+  to 6 decimals and ranks ties at their midpoint, so a last-bit float difference between
+  two runs can create or break a tie. A recompute disagreed with a saved artifact on one
+  gene of 1,092 (CCT3, per-gene rank 6.25 saved vs 6.0 live): one of its queries scores
+  0.22 float32 ulp past a rounding bin from CCT6A, a subunit of the same chaperonin
+  complex. Not the code (every dependency predates the artifact), not the thread count (an
+  8-thread rerun on the same node reproduces the live value). Reconcile per-gene ranks with
+  a tie-boundary tolerance and aggregates exactly; `scripts/repr_recon_check.py` measures
+  whether a mismatch is this.
+- **A number lifted from a run whose artefacts were later overwritten is not a result.**
+  "Standardising the similarity costs the combiner about a fifth" came from a run that a
+  bug fix overwrote. Re-measured as its own saved ablation it is 24% on K562 and 42% on
+  RPE1 -- the first figure understated RPE1 by half.
 
 See [README.md](README.md) for the download inventory, job list and cluster gotchas.
