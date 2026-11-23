@@ -103,10 +103,12 @@ def fig22(art, fig_dir, datasets):
     ax.set_yticks(yt)
     ax.set_yticklabels(yl)
     ax.set_xlabel("top-1 retrieval (%)")
-    ax.set_xlim(0, 58)
+    ax.set_xlim(0, 62)
     ax.invert_yaxis()
     hs = [plt.Rectangle((0, 0), 1, 1, color=DARK, alpha=a) for a in (1.0, 0.45)]
-    ax.legend(hs, [SHORT.get(d, d) for d in ds_list], loc="lower right", fontsize=6)
+    # the only empty region is top-right: with the y axis inverted the short bars
+    # (GO-kNN, + ridge) are the top rows, so anything past x~10 there is free
+    ax.legend(hs, [SHORT.get(d, d) for d in ds_list], loc="upper right", fontsize=6)
     _panel(ax, "a", x=-0.52)
 
     # ------------------------------------------- (b) GO's ordering vs the truth
@@ -152,10 +154,12 @@ def fig22(art, fig_dir, datasets):
                     mec=BLUE, mew=0.7, zorder=5, ls="none", label="real repr., kNN")
             ax.plot(sx, z["real_gls_top1"] * 100, marker="o", ms=3.0, mfc="white",
                     mec=RED, mew=0.7, zorder=5, ls="none", label="real repr., ridge")
-            for nm, sp, t1 in zip(z["real_names"], sx, z["real_gls_top1"]):
-                ax.annotate(str(nm).split("(")[0].replace("_", " "), (sp, t1 * 100),
-                            textcoords="offset points", xytext=(3, 3), fontsize=5.5,
-                            color=DARK)
+            cx, cy = float(np.mean(sx)), float(np.mean(z["real_gls_top1"]) * 100)
+            ax.annotate("every available\nrepresentation", (cx, cy),
+                        xytext=(cx + 14, cy + 13), fontsize=6, color=DARK,
+                        ha="left", va="bottom",
+                        arrowprops=dict(arrowstyle="-", lw=0.5, color=MID,
+                                        shrinkA=0, shrinkB=3))
     if drew:
         ax.set_xlabel("ordering quality\n(recall@10 of the true nearest neighbours, %)")
         ax.set_ylabel("top-1 retrieval (%)")

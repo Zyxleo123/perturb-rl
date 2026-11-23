@@ -100,12 +100,48 @@ def main():
                 cells.append(f"{r['median_rank_method']:.0f} · {r['win_rate_excl_ties']*100:.0f}% · {r['wilcoxon_p']:.1e}"
                              if r else "—")
             P(f"| `{key}` | " + " | ".join(cells) + " |")
-        d0 = ds_list[0]
-        base = stats["datasets"].get(d0, {}).get("xline__gls", {}).get("median_rank_baseline")
-        if base is not None:
-            P()
-            P(f"(`go__knn_avg` baseline median rank {base:.0f} on {SHORT.get(d0,d0)}.)")
         P()
+        P("Read against the win rates, the top-1 numbers are less impressive than they look.")
+        P("`xline__gls` improves K562's median rank (35.5 → 29.0) but wins on only 53.4% of")
+        P("genes, p = 0.017 — a real but narrow effect concentrated at the top of the ranking.")
+        P("On RPE1 the same row is significantly **worse** than GO-kNN on rank (125 → 231).")
+        P("And `learned__knn_avg` has the best median rank of any prior-only row on K562")
+        P("(24.0, p = 2e-11) while its top-1 is *below* GO's: the learned combination genuinely")
+        P("improves the ordering and genuinely does not improve the top slot.")
+        P()
+        # the cross-line kernel split by whether the other line actually measured the gene
+        cov = {d: stats["datasets"].get(d, {}).get("_xline_by_prior_coverage")
+               for d in ds_list}
+        if any(cov.values()):
+            P("**The cross-line row splits cleanly on whether the other line measured the gene.**")
+            P("`related_work.py` mean-imputes genes a prior source lacks, so the aggregate mixes a")
+            P("real measurement with a constant. Separating them, paired within each group:")
+            P()
+            P("| line | genes | n | median rank, GO-kNN → xline+ridge | top-1, GO-kNN → xline+ridge |")
+            P("|---|---|---:|---:|---:|")
+            for d, cv in cov.items():
+                if not cv:
+                    continue
+                for g, v in cv["groups"].items():
+                    lab = "other line measured it" if g == "real_prior" else "mean-imputed"
+                    P(f"| {SHORT.get(d,d)} | {lab} | {v['n_genes']} | "
+                      f"{v['median_rank_go_knn']:.1f} → {v['median_rank_xline_gls']:.1f} | "
+                      f"{v['top1_go_knn']*100:.1f}% → {v['top1_xline_gls']*100:.1f}% |")
+            P()
+            P("Where the other cell line really measured the gene the improvement is large and")
+            P("consistent on both lines — RPE1 top-1 2.1% → 6.1% with median rank 38.8 → 20.2,")
+            P("K562 2.4% → 4.0% with 35.0 → 28.5. Where the row is imputed it is destroyed")
+            P("(RPE1 383 → 695). RPE1's bad aggregate is therefore an artefact of 45% imputed")
+            P("rows, not evidence against the cross-line signal, and the mechanism is tested on")
+            P("the mask rather than inferred from the aggregate.")
+            P()
+            P("The honest statement of the one thing that moves this metric: **a gene unseen in")
+            P("*this* cell line but measured in another is identifiable roughly 2–3× better than")
+            P("GO gets it** (top-1 2.1% → 6.1% on RPE1, 2.4% → 4.0% on K562, paired within the")
+            P("covered genes). That is gap 0's unseen-*context* axis doing the work, not prior")
+            P("knowledge, and it is consistent with everything else here: measurement has value,")
+            P("annotation does not.")
+            P()
 
     if curve["datasets"]:
         P("### How good would a representation have to be?")

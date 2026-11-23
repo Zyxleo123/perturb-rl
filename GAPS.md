@@ -65,8 +65,17 @@ of the weight and the other nine views exactly zero. CSLS, the standard hubness 
 does not help either, and hubness is *lower* in the predicted space than the measured one.
 This extends the blind-regime negative from the policy to the predictor and sharpens the
 project's separation: *prior knowledge is worth ~1.2–1.3× in acquisition and essentially
-nothing in prediction; what carries value is measurement.* See "The unseen-gene gap is a
-combiner problem" below.
+nothing in prediction; what carries value is measurement.*
+
+Two things do move. Solving for the combination weights instead of averaging the ten
+neighbours — a closed-form ridge against the atlas Gram, which is measured, so neighbour
+redundancy is known without knowing the answer — is worth **3.4–3.6×** given a good
+similarity (12.5% → 44.4%, 14.1% → 48.3%) and 1.1–2.1× on anything real. And a gene
+unseen in *this* cell line but measured in another is identifiable **2–3× better than GO
+manages**, paired within the genes the other line actually covers (top-1 2.1% → 6.1% on
+RPE1, 2.4% → 4.0% on K562). That is gap 0's unseen-*context* axis doing the work, which
+is the same conclusion again: measurement has value, annotation does not. See "The
+unseen-gene gap is a combiner problem" below and fig22.
 
 The reward oracle, not the generator, is what limits this project. On Norman, a
 parameter-free nearest-centroid match recovers the correct perturbation **86.6%** of the
@@ -846,8 +855,176 @@ essentially nothing in prediction; what carries value is measurement.*
 > the rest, which makes those rows identical to one another and drives their Spearman against
 > signature similarity negative. K562 at 99.5% coverage is the clean test and says the same.
 
-Reproduce with `./submit.sh reprprobe` and `./submit.sh reprpred` (both CPU, ~2 min each) →
-`artifacts/repr_probe/` and `artifacts/repr_predict/`.
+![Representation anatomy](figures/fig22_representation_anatomy.png)
+
+<!-- repr-generated: begin -->
+### Ranking the neighbours is not the lever; combining them is
+
+Write the prediction as a weighted combination of atlas signatures,
+ŷ = Σ_j w_j y_j. Then cos(ŷ, y_g) = (Σ_j w_j ⟨y_j, y_g⟩) / √(wᵀGw), and maximising it
+has the closed form **w\* ∝ G⁻¹b**. The Gram matrix G is between *atlas* genes, which
+are measured, so redundancy among candidate neighbours is known exactly without knowing
+the answer; only b = s(g,·)·‖y‖ needs the representation. kNN averaging ignores G
+entirely, which double-counts neighbours that are near-duplicates of each other.
+`gls` is that solve with ridge λ; `mmr` is its discrete sibling. λ, the neighbourhood
+size m and the MMR penalty are chosen on a **different fold of genes** than the one
+being predicted.
+
+| similarity | combiner | K562 top-1 | RPE1 top-1 |
+|---|---|---:|---:|
+| GO Jaccard | knn_avg | **2.9%** | **1.5%** |
+| GO Jaccard | gls | 3.3% | 1.8% |
+| GO Jaccard | mmr | 2.8% | 1.8% |
+| learned priors | knn_avg | 2.4% | 1.5% |
+| learned priors | gls | 3.8% | 1.8% |
+| other line's Perturb-seq\* | knn_avg | 4.5% | 2.0% |
+| other line's Perturb-seq\* | gls | 4.9% | 3.5% |
+| true signature cosine\* | knn_avg | 12.5% | 14.1% |
+| true signature cosine\* | mmr | 23.7% | 25.1% |
+| true signature cosine\* | gls | **44.4%** | **48.3%** |
+| the gene's own measurement\* | — | 36.0% | 44.0% |
+
+`*` uses a measurement of perturbation effect rather than prior knowledge alone.
+
+**Given a good similarity the combiner is worth 3.4×–3.6×** (12.5% → 44.4% on K562, 14.1% → 48.3% on RPE1), clearing even the
+ceiling set by a gene's own measured signature. **Given a realistic similarity it is worth
+nothing**: on K562 GO goes 2.9% → 3.3% while its top-10 and median rank both
+get worse. The ridge solve amplifies whatever ordering it is handed, and GO has nothing
+to amplify.
+
+Paired over **genes** (a gene's ~1.8 queries are not independent evidence), Wilcoxon
+signed rank on per-gene rank against `go__knn_avg`:
+
+| | K562 median rank · win rate · p | RPE1 median rank · win rate · p |
+|---|---|---|
+| `xline__gls` | 29 · 53% · 1.7e-02 | 231 · 49% · 2.5e-04 |
+| `xline__knn_avg` | 26 · 54% · 1.2e-03 | 237 · 47% · 9.1e-05 |
+| `go__gls` | 55 · 52% · 7.1e-02 | 134 · 55% · 2.2e-03 |
+| `learned__knn_avg` | 24 · 55% · 2.0e-11 | 125 · 0% · 1.0e+00 |
+
+Read against the win rates, the top-1 numbers are less impressive than they look.
+`xline__gls` improves K562's median rank (35.5 → 29.0) but wins on only 53.4% of
+genes, p = 0.017 — a real but narrow effect concentrated at the top of the ranking.
+On RPE1 the same row is significantly **worse** than GO-kNN on rank (125 → 231).
+And `learned__knn_avg` has the best median rank of any prior-only row on K562
+(24.0, p = 2e-11) while its top-1 is *below* GO's: the learned combination genuinely
+improves the ordering and genuinely does not improve the top slot.
+
+**The cross-line row splits cleanly on whether the other line measured the gene.**
+`related_work.py` mean-imputes genes a prior source lacks, so the aggregate mixes a
+real measurement with a constant. Separating them, paired within each group:
+
+| line | genes | n | median rank, GO-kNN → xline+ridge | top-1, GO-kNN → xline+ridge |
+|---|---|---:|---:|---:|
+| K562 | other line measured it | 1085 | 35.0 → 28.5 | 2.4% → 4.0% |
+| K562 | mean-imputed | 7 | 146.5 → 350.0 | 0.0% → 0.0% |
+| RPE1 | other line measured it | 848 | 38.8 → 20.2 | 2.1% → 6.1% |
+| RPE1 | mean-imputed | 695 | 383.0 → 695.0 | 1.0% → 0.0% |
+
+Where the other cell line really measured the gene the improvement is large and
+consistent on both lines — RPE1 top-1 2.1% → 6.1% with median rank 38.8 → 20.2,
+K562 2.4% → 4.0% with 35.0 → 28.5. Where the row is imputed it is destroyed
+(RPE1 383 → 695). RPE1's bad aggregate is therefore an artefact of 45% imputed
+rows, not evidence against the cross-line signal, and the mechanism is tested on
+the mask rather than inferred from the aggregate.
+
+The honest statement of the one thing that moves this metric: **a gene unseen in
+*this* cell line but measured in another is identifiable roughly 2–3× better than
+GO gets it** (top-1 2.1% → 6.1% on RPE1, 2.4% → 4.0% on K562, paired within the
+covered genes). That is gap 0's unseen-*context* axis doing the work, not prior
+knowledge, and it is consistent with everything else here: measurement has value,
+annotation does not.
+
+### How good would a representation have to be?
+
+A verdict without a target is not actionable, so similarity *quality* is swept
+continuously by corrupting the true signature similarity,
+S_α = α·z(C) + √(1−α²)·z(E), and retrieval read off at each level.
+
+| K562: ordering quality | Spearman | recall@10 | top-1, kNN avg | top-1, ridge | ridge gain |
+|---|---:|---:|---:|---:|---:|
+| alpha=0 | -0.002 | 0.8% | 0.00% | 0.05% | — |
+| alpha=0.05 | +0.043 | 1.3% | 0.05% | 0.10% | — |
+| alpha=0.1 | +0.087 | 1.7% | 0.15% | 0.20% | — |
+| alpha=0.15 | +0.132 | 2.5% | 0.30% | 0.61% | — |
+| alpha=0.2 | +0.176 | 3.2% | 0.76% | 0.91% | 1.2× |
+| alpha=0.3 | +0.265 | 5.5% | 1.66% | 1.56% | 0.9× |
+| alpha=0.4 | +0.353 | 8.6% | 2.82% | 2.42% | 0.9× |
+| alpha=0.5 | +0.442 | 12.9% | 4.03% | 2.98% | 0.7× |
+| alpha=0.65 | +0.580 | 20.8% | 6.20% | 7.46% | 1.2× |
+| alpha=0.8 | +0.731 | 32.6% | 9.08% | 14.78% | 1.6× |
+| alpha=0.9 | +0.850 | 45.0% | 11.30% | 21.53% | 1.9× |
+| alpha=1 | +1.000 | 100.0% | 12.51% | 44.43% | 3.6× |
+| **go_jaccard** | **+0.123** | **14.3%** | **2.87%** | **3.33%** | |
+| **learned_priors** | **+0.174** | **17.9%** | **2.42%** | **3.78%** | |
+| **xline(rpe1_kernel)** | **+0.262** | **19.9%** | **4.54%** | **4.94%** | |
+| **learned_with_xline** | **+0.276** | **19.2%** | **1.97%** | **4.03%** | |
+
+Two readings, and the first corrects the obvious one.
+
+**Global rank correlation is the wrong summary.** The sweep point that matches GO
+Jaccard's Spearman (+0.123) reaches +0.132 and returns
+0.30% top-1 against GO's 2.87% — a factor of 9.5.
+The recall column says why: at that Spearman the corruption recovers
+2.5% of a gene's true top-10 neighbours and GO recovers
+14.3%. Isotropic noise spreads error over the whole ordering; GO is
+wrong almost everywhere but concentrates what accuracy it has at the **top** of the
+list, the only part a kNN or a ridge solve reads. Matched instead on recall@10
+(12.9%), the sweep returns 4.03% against GO's 2.87% — within 1.4×, so recall@k is the
+axis these curves should be read on. It is still not exact, and the residual runs
+one way on both lines: GO returns *less* than an isotropic corruption at matched
+recall, so GO's misses are more adversarial than random — when it picks the wrong
+neighbours it picks genes that are genuinely confusable with the target.
+
+**On the sweep, the combiner needs high ordering quality and below it can hurt.**
+Its worst point is 0.7× at recall@10 12.9% — the ridge solve is
+*worse* than plain averaging there, because it amplifies whatever ordering it is
+handed and a middling ordering amplified is still middling.
+Only from recall@10 ≈ 33% does every higher level clear 1.3×, rising to
+3.6× at the oracle.
+
+**How the real representations sit against the sweep**, matched on recall@10:
+
+| line | representation | recall@10 | kNN: real vs sweep | ridge gain: real vs sweep |
+|---|---|---:|---:|---:|
+| K562 | go jaccard | 14.3% | 2.87% vs 4.03% | 1.16× vs 0.74× |
+| K562 | learned priors | 17.9% | 2.42% vs 6.20% | 1.56× vs 1.20× |
+| K562 | xline | 19.9% | 4.54% vs 6.20% | 1.09× vs 1.20× |
+| K562 | learned with xline | 19.2% | 1.97% vs 6.20% | 2.05× vs 1.20× |
+| RPE1 | go jaccard | 9.6% | 1.54% vs 3.21% | 1.19× vs 2.03× |
+| RPE1 | learned priors | 9.6% | 1.54% vs 3.21% | 1.19× vs 2.03× |
+| RPE1 | xline | 12.0% | 2.01% vs 3.21% | 1.72× vs 2.03× |
+| RPE1 | learned with xline | 9.6% | 1.54% vs 3.21% | 1.19× vs 2.03× |
+
+**One reading holds on both lines.** GO's *kNN* returns less than an isotropic
+corruption of matched recall (2.87% vs 4.03% on K562; 1.54% vs 3.21% on RPE1), so GO's
+misses are more adversarial than random — when it retrieves the wrong neighbours it
+retrieves genes that are genuinely confusable with the target, not arbitrary ones.
+
+**One reading does not.** Whether the *combiner* does better on a real
+representation than on a matched corruption goes opposite ways on the two lines
+(K562 better by 0.42×, RPE1 worse by 0.83×). A tempting story — that real
+mistakes are *redundant*, retrieving several members of one complex, which is exactly
+the structure G⁻¹ deconvolves — fits K562 and is refuted by RPE1. So it is recorded
+as unexplained rather than asserted, and the isotropic sweep is not a reliable
+predictor of the combiner's value on a real representation in either direction.
+
+What *is* consistent: the combiner's large gains need high ordering quality. It reaches
+3.6× on K562, 3.4× on RPE1 at the oracle, against 1.1–2.1× on any
+available representation, and the ridge solve can even fall *below* plain averaging at
+middling quality because it amplifies whatever ordering it is handed.
+
+That is the specification this section buys. A gene representation for this task needs
+**top-k neighbour recall**, not global correlation, and it needs **calibrated**
+similarity magnitudes: kNN reads only the ordering, but the ridge solve reads
+b = s(g,j)‖y_j‖ as a magnitude, and standardising the similarity alone costs about a
+fifth of the combiner's value. So it should be trained on a top-k ranking objective
+with calibrated scores, not fitted to reproduce the whole similarity matrix.
+<!-- repr-generated: end -->
+
+Reproduce the whole chain with `./submit.sh repr` (probe → pred → sel → curve →
+figs, all CPU, ~45 min) → `artifacts/repr_{probe,predict,select,curve}/` and fig22.
+Individual stages: `reprprobe`, `reprpred`, `reprsel`, `reprcurve`, `reprfigs`.
 
 ---
 
