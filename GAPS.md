@@ -53,6 +53,21 @@ REINFORCE's budget of reward evaluations reaches 1.22–1.31× / 1.43–1.51×. 
 greedy, but trails the RL methods' 1.35–1.38× / 1.54–1.59×. See "Related work on the same
 task" below.
 
+**The unseen-gene gap is a combiner problem, not a knowledge problem (added 2026-11-22).**
+Gap 0's shortfall is not a limit of the predictor *class*. Holding the task, the predictor
+and the metric fixed and changing only which ten atlas genes get averaged, top-1 goes from
+GO-kNN's **2.9% / 1.5%** to **38.9% / 41.4%** — against **36.0% / 44.0%** for genes whose
+signature has actually been measured. Being unseen costs almost nothing in principle. GO
+Jaccard correlates **0.12 / 0.08** with true signature similarity and recovers **14% / 10%**
+of a gene's true top-10 neighbours, and none of IterPert's eight published multimodal
+priors beats it in the predictor — a learned non-negative combination gives GO Jaccard all
+of the weight and the other nine views exactly zero. CSLS, the standard hubness correction,
+does not help either, and hubness is *lower* in the predicted space than the measured one.
+This extends the blind-regime negative from the policy to the predictor and sharpens the
+project's separation: *prior knowledge is worth ~1.2–1.3× in acquisition and essentially
+nothing in prediction; what carries value is measurement.* See "The unseen-gene gap is a
+combiner problem" below.
+
 The reward oracle, not the generator, is what limits this project. On Norman, a
 parameter-free nearest-centroid match recovers the correct perturbation **86.6%** of the
 time from a 128-cell target, while ranking the same 230 candidates by GEARS-predicted
@@ -708,6 +723,131 @@ Reproduce with `./submit.sh related` (fetch ~1 min, prior alignment ~1 min, a 39
 array of ≤ 10 min, then the report). Outputs go to
 `artifacts/rl_acquire/related/{runs/,priors_*.npz,priors_check.json}`, the "Related work on
 the same task" section of `artifacts/rl_acquire/report.md`, and fig17.
+
+---
+
+## The unseen-gene gap is a combiner problem, not a knowledge problem
+
+**Added 2026-11-22.** Gap 0 reports one number per predictor — 0.8–1.9% top-1 against a
+32.5–88.9% ceiling — and diagnoses it as *fidelity without discrimination*. The blind-regime
+section closes by naming the gene representation as the one surviving open problem. This
+section takes that diagnosis apart into causes that have different consequences: the
+predictor **class**, the **similarity** that picks neighbours, and the **scoring geometry**.
+
+The task is held fixed at `story_cases.case_gap`'s — every gene held out in turn, its
+signature predicted from the *other* genes' half-A signatures, its held-out queries ranked
+against all K predictions. Our GO-Jaccard row reproduces `rl_headroom.go_knn_predict` to
+max |Δ| = **0.0**, and `rl_headroom.build` reproduces the RL cache, so every number below
+is comparable to the ones above.
+
+### The predictor class was never the limit
+
+| top-1, all queries | K562 | RPE1 |
+|---|---:|---:|
+| mean effect (no gene information) | 0.0% | 0.0% |
+| **GO-kNN, k=10 — the predictor every gap-0 number uses** | **2.9%** | **1.5%** |
+| same predictor, similarity = *true* signature cosine | 12.5% | 14.1% |
+| same predictor, best 10 atlas genes by reconstruction | **38.9%** | **41.4%** |
+| the gene's **own** measured half-A signature (atlas ceiling) | 36.0% | 44.0% |
+
+A uniform average of ten *other* genes' measured signatures reaches **38.9% / 41.4%**,
+against **36.0% / 44.0%** for genes whose signature *has* been measured. Being unseen
+costs almost nothing in principle. The whole shortfall is in choosing and weighting the ten,
+and it is large: GO-kNN delivers **2.9% / 1.5%**, a 13–27× gap inside the same predictor class.
+
+> The atlas average is a **denoiser**, and that is quartile-dependent rather than a clean
+> win over self-measurement. Split by the gene's own split-half reliability, reconstruction
+> beats the gene's own signature on the noisy quartiles (K562 q0 median rank 8 vs 28) and
+> loses on the cleanest (q3 top-1 34% vs 53%); it is strictly better for 54% / 51% of genes.
+> The aggregate above is the net of those two effects.
+
+### GO is nearly uninformative about what it is asked to predict
+
+- **K562**: Spearman between GO Jaccard and true signature cosine **0.124**;
+  a gene's true nearest signature neighbour sits at GO rank **82** of
+  1092; GO's top-10 recovers **14.3%** of the true top-10.
+- **RPE1**: Spearman between GO Jaccard and true signature cosine **0.076**;
+  a gene's true nearest signature neighbour sits at GO rank **349** of
+  1543; GO's top-10 recovers **9.6%** of the true top-10.
+
+This is the quantitative form of a conclusion the field has reached independently — that GO
+annotations are too coarse for gene-level perturbation prediction.
+
+### Scoring geometry is ruled out, with the method designed for it
+
+Framing A killed the rank-reward idea using centring and whitening. The standard correction
+for retrieval *between two embedding spaces* is CSLS (Conneau et al., ICLR 2018), which was
+not tested. It does not help:
+
+| top-1 | K562 | RPE1 |
+|---|---:|---:|
+| GO-kNN | 2.9% | 1.5% |
+| GO-kNN + centred | 2.6% | 1.3% |
+| GO-kNN + csls | 2.3% | 1.3% |
+
+Hubness is in fact *lower* in the predicted space than the measured one (N₁₀ skew
+1.78 vs 2.96 on K562, 2.69 vs 6.96 on RPE1), so hub candidates are not
+absorbing the queries. The discrimination is not in the prediction waiting to be scored
+differently — now shown against the correction a reviewer would name, not only whitening.
+
+### Where it fails, and where the failure is irreducible
+
+| K562, median rank by the gene's own split-half reliability | q0 (noisiest) | q1 | q2 | q3 (cleanest) |
+|---|---:|---:|---:|---:|
+| GO-kNN | 84 | 50 | 25 | 18 |
+| true-signature similarity | 10 | 7 | 6 | 13 |
+| the gene's own measured signature | 28 | 6 | 3 | 1 |
+
+GO-kNN collapses on noisy genes (RPE1: median rank 24 → 457 from the cleanest quartile to
+the noisiest). A correct similarity is flat across reliability. The one place it does *worse*
+is for genes that have a near-duplicate in the atlas: stratified by best-available-neighbour
+cosine, median rank is 18 for the top quartile (cosine 0.83) against 6 for the bottom (0.33).
+Two members of one protein complex are not separable from the transcriptome, so the duplicate
+competes with the right answer. That part is a ceiling, not a modelling failure.
+
+### No published prior representation beats GO Jaccard
+
+IterPert's eight released multimodal kernels are already aligned to these candidates by
+`scripts/related_work.py`, so they drop straight into the predictor — the swap the blind-regime
+section never made, because it enriched only the *policy's* view. K562 has 99.5% prior
+coverage and carries the conclusion.
+
+| similarity (K562) | top-1 | top-10 | MRR | median rank | Spearman vs signature | recall@10 |
+|---|---:|---:|---:|---:|---:|---:|
+| **go_jaccard** | 2.9% | 27.7% | 0.101 | 34 | 0.123 | 14.3% |
+| go_idf | 2.0% | 28.6% | 0.095 | 29 | 0.124 | 15.3% |
+| go_emb | 1.5% | 19.0% | 0.071 | 43 | 0.084 | 14.0% |
+| pops_kernel | 2.5% | 24.0% | 0.088 | 48 | 0.070 | 13.3% |
+| node2vec_kernel | 1.9% | 23.5% | 0.086 | 39 | 0.168 | 16.2% |
+| esm_kernel | 0.6% | 6.4% | 0.028 | 260 | 0.004 | 3.6% |
+| biogpt_kernel | 0.5% | 12.9% | 0.041 | 180 | 0.030 | 9.7% |
+| ops_A549_kernel | 0.6% | 4.4% | 0.022 | 378 | 0.021 | 1.9% |
+| ops_HeLa_HPLM_kernel | 0.9% | 7.1% | 0.033 | 208 | 0.099 | 4.0% |
+| ops_HeLa_DMEM_kernel | 0.6% | 6.3% | 0.030 | 193 | 0.073 | 3.3% |
+| learned_priors | 2.4% | 28.1% | 0.099 | 25 | 0.174 | 17.9% |
+| rpe1_kernel* | 4.5% | 30.9% | 0.131 | 26 | 0.262 | 19.9% |
+| oracle_sim* | 12.5% | 56.3% | 0.257 | 8 | 1.000 | 100.0% |
+
+`*` = uses a *measurement* of perturbation effect (another cell line, or the held-out gene
+itself), not prior knowledge.
+
+The learned non-negative combination improves the **ordering** (Spearman
+0.123 → 0.174, recall@10 14.3% → 17.9%, median rank
+34 → 25) without improving top-1. On RPE1 it gives GO Jaccard all of the
+weight (0.389) and the other nine views **exactly zero** — there is nothing to add. The
+only view that beats GO is the other cell line's measured Perturb-seq, which is a measurement.
+
+**This extends the blind-regime negative from the policy to the predictor**, which is where
+gap 0 and the blind-regime section both said the open problem lived. The separation the
+project reports becomes sharper: *prior knowledge is worth ~1.2–1.3× in acquisition and
+essentially nothing in prediction; what carries value is measurement.*
+
+> **Caveat.** RPE1's prior kernels cover 84% of candidates and `related_work.py` mean-imputes
+> the rest, which makes those rows identical to one another and drives their Spearman against
+> signature similarity negative. K562 at 99.5% coverage is the clean test and says the same.
+
+Reproduce with `./submit.sh reprprobe` and `./submit.sh reprpred` (both CPU, ~2 min each) →
+`artifacts/repr_probe/` and `artifacts/repr_predict/`.
 
 ---
 
