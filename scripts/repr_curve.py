@@ -21,9 +21,17 @@ What this is for: it converts the negative into a specification. A future gene
 representation is worth building only if it clears the Spearman at which the curve leaves
 the floor, and the curve says what retrieval it would buy.
 
-Caveat kept in view: a corrupted oracle is an *isotropic* degradation. A real
-representation fails structurally (it confuses whole pathways), so the curve is an
-optimistic bound on what a given Spearman buys, not a promise.
+Measured correction to the obvious reading (2026-11-22). Indexed by Spearman the curve is
+a PESSIMISTIC bound, not an optimistic one. At alpha = 0.15 the corrupted oracle reaches
+Spearman 0.132 -- essentially GO Jaccard's 0.123 -- yet only 0.30% top-1 against GO's
+2.87%. The reason is in the recall column: at that Spearman the corruption recovers 2.5%
+of a gene's true top-10 neighbours while GO recovers 14.3%. Isotropic noise spreads its
+error over the whole ordering; GO is wrong almost everywhere but concentrates what
+accuracy it has at the TOP of the list, which is the only part a kNN or a ridge solve
+reads. So global rank correlation is the wrong summary of a gene representation, and
+recall@k is the axis these curves should be read on. That is itself the actionable
+finding: a representation should be trained on a top-k ranking objective, not fitted to
+reproduce the whole similarity matrix.
 
 Writes <art>/repr_curve/{curve_<dataset>.npz, summary.json, report.md}. Exits 0.
 
@@ -160,6 +168,7 @@ def run(ds, cache_path, priors_path, gears_dir, out_dir, knn):
         gls_mrr=np.array([curve[f"alpha={a:g}"]["gls"]["mrr"] for a in ALPHAS], np.float32),
         real_names=np.array(list(real.keys())),
         real_spearman=np.array([v["spearman"] for v in real.values()], np.float32),
+        real_recall=np.array([v["recall_at_k"] for v in real.values()], np.float32),
         real_knn_top1=np.array([v["knn_avg"]["top1"] for v in real.values()], np.float32),
         real_gls_top1=np.array([v["gls"]["top1"] for v in real.values()], np.float32),
     )

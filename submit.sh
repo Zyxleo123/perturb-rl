@@ -30,6 +30,7 @@
 #   ./submit.sh reprpred             # swap the predictor's gene representation: priors vs GO vs learned
 #   ./submit.sh reprsel              # ranking neighbours vs combining them: knn average vs ridge vs MMR
 #   ./submit.sh reprcurve            # how good must a representation be? similarity quality -> retrieval
+#   ./submit.sh reprfigs             # fig22 + paired significance tests, from saved artifacts (cheap)
 #   FETCH_PDG_CHEMICAL=1 ./submit.sh # also pull the 37 GB chemical tarball
 set -euo pipefail
 
@@ -287,6 +288,12 @@ if [ "$STAGE" = "reprcurve" ]; then
   # becomes a number a future representation can be measured against.
   ID[reprcurve]=$(sub "$J/53_repr_curve.sbatch")
   printf '  %-10s %s\n' reprcurve "${ID[reprcurve]}"
+fi
+
+if [ "$STAGE" = "reprfigs" ]; then
+  # fig22 + paired significance tests, from artifacts/repr_*/ only (cheap, redrawable).
+  ID[reprfigs]=$(sub "$J/54_repr_figs.sbatch")
+  printf '  %-10s %s\n' reprfigs "${ID[reprfigs]}"
 fi
 
 if [ "$STAGE" = "genfigs" ]; then
