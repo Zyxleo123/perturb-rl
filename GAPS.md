@@ -469,9 +469,10 @@ real signatures to do the same. Static GO coverage, the floor Framing B used, is
   > gene representations, three ways of combining neighbours, and learned or recalibrated
   > inner products — none beats it on both top-1 and median rank on both lines; GO-IDF
   > does on RPE1 alone, by 0.08 points of top-1. So GO-kNN is not a weak choice hiding a
-  > better acquisition result. The only predictors that do beat it use the other cell
-  > line's measurements (1.7–2.9× on the genes it covers). See "The unseen-gene gap is a
-  > combiner problem".
+  > better acquisition result. What does beat it uses the other cell line's measurements,
+  > and only on the genes that line covers (1.7–2.9× top-1 there); over all genes it fails
+  > the same bar on RPE1, whose 45% mean-imputed rows push its median rank from 148 to 280.
+  > See "The unseen-gene gap is a combiner problem".
 
 Reproduce with `./submit.sh rlacq`, all CPU: cache 2 min, baselines ≤ 45 min, 15 training
 tasks ≤ 45 min, report 2 min. Outputs go to
