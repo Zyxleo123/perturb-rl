@@ -30,16 +30,19 @@ sec = subprocess.run([PY, "-I", f"{HOME}/scripts/repr_section.py", "--art-dir", 
 if not sec.strip():
     sys.exit("generator produced nothing")
 
-# Guard against a stale filesystem view. Artifacts are written on compute nodes onto
-# NFS-backed scratch, and a file another host just created can be invisible here for a
-# while (negative-lookup caching): the generator then silently takes its fallback branch
-# and the splice writes "measures how much" over a number that is already on disk.
-# Observed 2026-11-23. Re-check the file with a fresh listing and refuse if they disagree.
-cal = os.path.join(ART, "repr_curve", "calibration.json")
-os.listdir(os.path.dirname(cal))                    # forces a fresh directory read
-if os.path.exists(cal) and "measures how" in sec:
-    sys.exit("calibration.json exists but the generator took its fallback branch: "
-             "stale filesystem view, re-run in a moment rather than splicing it")
+# Refuse to splice a write-up that is missing the calibration number. Measured
+# 2026-11-23: /zfsauton/scratch is NFS v4 mounted with acregmin=acdirmin=600, so a file a
+# compute node just wrote can be invisible on this login node for up to TEN MINUTES -- to
+# stat, to listdir, and to the generator's subprocess alike, so no in-process re-check can
+# see past it. The generator then takes its fallback branch ("measures how much"), which
+# omits the number rather than misstating it, and a splice would silently write that.
+# Calibration is part of `./submit.sh repr`, so a final write-up must always carry it:
+# treat the fallback as a stale view and stop.
+if "measures how" in sec:
+    sys.exit("the calibration number is missing from the generated section. Either "
+             "`./submit.sh reprcalib` has not run, or it ran within the last ~10 minutes and "
+             "NFS attribute caching (acregmin=600 on /zfsauton/scratch) still hides "
+             "repr_curve/calibration.json from this node. Wait and re-run; do not splice.")
 
 p = os.path.join(HOME, "GAPS.md")
 s = open(p).read()
