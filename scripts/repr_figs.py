@@ -229,8 +229,12 @@ def paired_stats(art, datasets, out_path):
         json.dump(out, f, indent=2)
     print(f"[repr] wrote {out_path}")
     for ds, rows in out["datasets"].items():
-        print(f"  {ds}: baseline median rank {list(rows.values())[0]['median_rank_baseline']:.0f}")
+        # pop the coverage entry FIRST: it has no per-method fields, so anything that
+        # indexes rows positionally must not see it
         cov = rows.pop("_xline_by_prior_coverage", None)
+        if not rows:
+            continue
+        print(f"  {ds}: baseline median rank {list(rows.values())[0]['median_rank_baseline']:.0f}")
         if cov:
             for g, v in cov["groups"].items():
                 print(f"    [{cov['kernel']} {g}] n={v['n_genes']:4d}  "
