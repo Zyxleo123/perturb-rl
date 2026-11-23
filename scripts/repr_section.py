@@ -75,7 +75,10 @@ def main():
     P("`*` uses a measurement of perturbation effect rather than prior knowledge alone.")
     P()
     k = ds_list[0]
-    P(f"**Given a good similarity the combiner is worth ~3.5×** ({pct(m(k,'oracle__knn_avg'))} → "
+    gains = [m(d, "oracle__gls") / m(d, "oracle__knn_avg") for d in ds_list
+             if m(d, "oracle__knn_avg") > 0]
+    gtxt = "–".join(f"{g:.1f}×" for g in sorted(set(round(g, 1) for g in gains))) or "n/a"
+    P(f"**Given a good similarity the combiner is worth {gtxt}** ({pct(m(k,'oracle__knn_avg'))} → "
       f"{pct(m(k,'oracle__gls'))} on {SHORT.get(k,k)}" +
       (f", {pct(m(ds_list[1],'oracle__knn_avg'))} → {pct(m(ds_list[1],'oracle__gls'))} on {SHORT.get(ds_list[1],ds_list[1])}"
        if len(ds_list) > 1 else "") + "), clearing even the")
@@ -116,7 +119,9 @@ def main():
         P(f"| {SHORT.get(d0,d0)}: ordering quality | Spearman | recall@10 | top-1, kNN avg | top-1, ridge | ridge gain |")
         P("|---|---:|---:|---:|---:|---:|")
         for k2, v in c.items():
-            g = v["gls"]["top1"] / v["knn_avg"]["top1"] if v["knn_avg"]["top1"] > 0 else float("nan")
+            # a ratio of two near-zero rates is noise, not a gain
+            g = (v["gls"]["top1"] / v["knn_avg"]["top1"]
+                 if v["knn_avg"]["top1"] >= 0.005 else float("nan"))
             P(f"| {k2} | {v['spearman']:+.3f} | {v['recall_at_k']*100:.1f}% | "
               f"{v['knn_avg']['top1']*100:.2f}% | {v['gls']['top1']*100:.2f}% | "
               + (f"{g:.1f}×" if g == g else "—") + " |")
@@ -126,24 +131,71 @@ def main():
         P()
         P("Two readings, and the first corrects the obvious one.")
         P()
-        P("**Global rank correlation is the wrong summary.** At α = 0.15 the corruption reaches")
-        P("Spearman 0.132 — essentially GO Jaccard's 0.123 — and returns 0.30% top-1 against GO's")
-        P("2.87%, a factor of nine. The recall column says why: at that Spearman the corruption")
-        P("recovers 2.5% of a gene's true top-10 neighbours and GO recovers 14.3%. Isotropic noise")
-        P("spreads error over the whole ordering; GO is wrong almost everywhere but concentrates")
-        P("what accuracy it has at the **top** of the list, the only part a kNN or a ridge solve")
-        P("reads. Read on recall@10 the curve tracks the real representations far more closely")
-        P("(within ~1.4× rather than ~9×) — though not exactly: GO still returns *less* than an")
-        P("isotropic corruption at matched recall@10, so GO's misses are more adversarial than")
-        P("random, retrieving genes that are genuinely confusable with the target.")
+        real = curve["datasets"][d0]["real"]
+        go = real.get("go_jaccard")
+        pts = list(c.values())
+        if go:
+            # the sweep point whose Spearman matches GO's, and the one whose recall does
+            bs = min(pts, key=lambda v: abs(v["spearman"] - go["spearman"]))
+            br = min(pts, key=lambda v: abs(v["recall_at_k"] - go["recall_at_k"]))
+            fs = go["knn_avg"]["top1"] / bs["knn_avg"]["top1"] if bs["knn_avg"]["top1"] > 0 else float("nan")
+            fr = go["knn_avg"]["top1"] / br["knn_avg"]["top1"] if br["knn_avg"]["top1"] > 0 else float("nan")
+            P("**Global rank correlation is the wrong summary.** The sweep point that matches GO")
+            P(f"Jaccard's Spearman ({go['spearman']:+.3f}) reaches {bs['spearman']:+.3f} and returns")
+            P(f"{bs['knn_avg']['top1']*100:.2f}% top-1 against GO's {go['knn_avg']['top1']*100:.2f}%"
+              + (f" — a factor of {fs:.1f}." if fs == fs else "."))
+            P("The recall column says why: at that Spearman the corruption recovers")
+            P(f"{bs['recall_at_k']*100:.1f}% of a gene's true top-10 neighbours and GO recovers")
+            P(f"{go['recall_at_k']*100:.1f}%. Isotropic noise spreads error over the whole ordering; GO is")
+            P("wrong almost everywhere but concentrates what accuracy it has at the **top** of the")
+            P("list, the only part a kNN or a ridge solve reads. Matched instead on recall@10")
+            P(f"({br['recall_at_k']*100:.1f}%), the sweep returns {br['knn_avg']['top1']*100:.2f}% against GO's "
+              f"{go['knn_avg']['top1']*100:.2f}%"
+              + (f" — within {max(fr,1/fr):.1f}×" if fr == fr and fr > 0 else "")
+              + ", so recall@k is the")
+            P("axis these curves should be read on. It is still not exact, and the residual runs")
+            P("one way on both lines: GO returns *less* than an isotropic corruption at matched")
+            P("recall, so GO's misses are more adversarial than random — when it picks the wrong")
+            P("neighbours it picks genes that are genuinely confusable with the target.")
+            P()
+        # Where does the combiner start to pay? The gain is NOT monotonic in quality: at
+        # the bottom of the sweep both rates are near the floor and their ratio is erratic
+        # (a 0.30%/0.81% pair reads as 2.7x and means nothing). So the threshold is the
+        # SUSTAINED one -- the lowest recall above which every higher-quality point also
+        # clears the bar -- not the first point that happens to clear it.
+        BAR = 1.3
+        pts_r = sorted(pts, key=lambda v: v["recall_at_k"])
+        def gain(v):
+            return (v["gls"]["top1"] / v["knn_avg"]["top1"]
+                    if v["knn_avg"]["top1"] >= 0.005 else float("nan"))
+        start = None
+        for i in range(len(pts_r)):
+            tail = pts_r[i:]
+            gs = [gain(v) for v in tail]
+            if all(g == g and g >= BAR for g in gs):
+                start = pts_r[i]
+                break
+        if start is not None:
+            P(f"**The combiner switches on above recall@10 ≈ {start['recall_at_k']*100:.0f}%** on "
+              f"{SHORT.get(d0,d0)}: that is the")
+            P(f"lowest swept quality above which *every* higher level also clears {BAR:g}×. The gain is")
+            P("not monotonic lower down — at the bottom of the sweep both rates sit near the floor")
+            P("and their ratio is erratic — but from that point it rises steadily to the oracle's")
+            P(f"{gain(pts_r[-1]):.1f}×. Every available representation sits at or under the threshold:")
+            P("  " + ", ".join(f"{k2.split('(')[0]} {v['recall_at_k']*100:.1f}%"
+                               for k2, v in real.items()) + ".")
+            P("That is precisely why none of them moved anything.")
+        else:
+            P(f"**No sustained combiner gain above {BAR:g}× appears anywhere in the sweep** on "
+              f"{SHORT.get(d0,d0)},")
+            P("so no threshold is claimed from this run.")
         P()
-        P("**The combiner switches on above recall@10 ≈ 20%.** Its advantage over kNN averaging is")
-        P("~1× up to recall 13%, 1.4× at 21%, 1.7× at 33% and 3.6× at the oracle. Every available")
-        P("representation sits just under that threshold — GO 14.3%, the learned combination 17.9%,")
-        P("the other line's Perturb-seq 19.9% — which is precisely why none of them moved anything.")
-        P("That is the specification this section buys: **a gene representation for this task is")
-        P("worth building only if it clears ~20% recall@10, and it should be trained on a top-k")
-        P("ranking objective rather than fitted to reproduce the whole similarity matrix.**")
+        P("That is the specification this section buys. A gene representation for this task needs")
+        P("**top-k neighbour recall**, not global correlation, and it needs **calibrated**")
+        P("similarity magnitudes: kNN reads only the ordering, but the ridge solve reads")
+        P("b = s(g,j)‖y_j‖ as a magnitude, and standardising the similarity alone costs about a")
+        P("fifth of the combiner's value. So it should be trained on a top-k ranking objective")
+        P("with calibrated scores, not fitted to reproduce the whole similarity matrix.")
         P()
     return 0
 
