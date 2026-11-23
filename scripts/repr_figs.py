@@ -143,12 +143,19 @@ def fig22(art, fig_dir, datasets):
                 ls="-" if j == 0 else (0, (3, 2)),
                 label=f"ridge combiner, {SHORT.get(ds, ds)}")
         if j == 0:
+            # The real representations carry both findings, so plot both of their values:
+            # their kNN sits BELOW the sweep's kNN curve (their misses are adversarial),
+            # while their ridge sits ABOVE the sweep's ridge curve (their misses are
+            # redundant, which is what the solve deconvolves).
             sx = z[xk] * (100 if xk == "real_recall" else 1)
+            ax.plot(sx, z["real_knn_top1"] * 100, marker="s", ms=2.6, mfc="white",
+                    mec=BLUE, mew=0.7, zorder=5, ls="none", label="real repr., kNN")
+            ax.plot(sx, z["real_gls_top1"] * 100, marker="o", ms=3.0, mfc="white",
+                    mec=RED, mew=0.7, zorder=5, ls="none", label="real repr., ridge")
             for nm, sp, t1 in zip(z["real_names"], sx, z["real_gls_top1"]):
-                ax.plot([sp], [t1 * 100], marker="o", ms=3, mfc="white", mec=INK, mew=0.7,
-                        zorder=5, ls="none")
-                ax.annotate(str(nm).split("(")[0], (sp, t1 * 100), textcoords="offset points",
-                            xytext=(3, 3), fontsize=5.5, color=DARK)
+                ax.annotate(str(nm).split("(")[0].replace("_", " "), (sp, t1 * 100),
+                            textcoords="offset points", xytext=(3, 3), fontsize=5.5,
+                            color=DARK)
     if drew:
         ax.set_xlabel("ordering quality\n(recall@10 of the true nearest neighbours, %)")
         ax.set_ylabel("top-1 retrieval (%)")
