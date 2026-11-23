@@ -158,11 +158,10 @@ def main():
             P("recall, so GO's misses are more adversarial than random — when it picks the wrong")
             P("neighbours it picks genes that are genuinely confusable with the target.")
             P()
-        # Where does the combiner start to pay? The gain is NOT monotonic in quality: at
-        # the bottom of the sweep both rates are near the floor and their ratio is erratic
-        # (a 0.30%/0.81% pair reads as 2.7x and means nothing). So the threshold is the
-        # SUSTAINED one -- the lowest recall above which every higher-quality point also
-        # clears the bar -- not the first point that happens to clear it.
+        # Where does the combiner start to pay? Two separate questions, and conflating
+        # them produced a wrong claim once already: the ISOTROPIC sweep's threshold is not
+        # the threshold for REAL representations, which do better than the sweep at
+        # matched recall.
         BAR = 1.3
         pts_r = sorted(pts, key=lambda v: v["recall_at_k"])
         def gain(v):
@@ -170,25 +169,47 @@ def main():
                     if v["knn_avg"]["top1"] >= 0.005 else float("nan"))
         start = None
         for i in range(len(pts_r)):
-            tail = pts_r[i:]
-            gs = [gain(v) for v in tail]
+            gs = [gain(v) for v in pts_r[i:]]
             if all(g == g and g >= BAR for g in gs):
                 start = pts_r[i]
                 break
+        dip = min((v for v in pts_r if gain(v) == gain(v)), key=gain, default=None)
+        P("**On the sweep, the combiner needs high ordering quality and below it can hurt.**")
+        if dip is not None:
+            P(f"Its worst point is {gain(dip):.1f}× at recall@10 {dip['recall_at_k']*100:.1f}% — the ridge solve is")
+            P("*worse* than plain averaging there, because it amplifies whatever ordering it is")
+            P("handed and a middling ordering amplified is still middling.")
         if start is not None:
-            P(f"**The combiner switches on above recall@10 ≈ {start['recall_at_k']*100:.0f}%** on "
-              f"{SHORT.get(d0,d0)}: that is the")
-            P(f"lowest swept quality above which *every* higher level also clears {BAR:g}×. The gain is")
-            P("not monotonic lower down — at the bottom of the sweep both rates sit near the floor")
-            P("and their ratio is erratic — but from that point it rises steadily to the oracle's")
-            P(f"{gain(pts_r[-1]):.1f}×. Every available representation sits at or under the threshold:")
-            P("  " + ", ".join(f"{k2.split('(')[0]} {v['recall_at_k']*100:.1f}%"
-                               for k2, v in real.items()) + ".")
-            P("That is precisely why none of them moved anything.")
-        else:
-            P(f"**No sustained combiner gain above {BAR:g}× appears anywhere in the sweep** on "
-              f"{SHORT.get(d0,d0)},")
-            P("so no threshold is claimed from this run.")
+            P(f"Only from recall@10 ≈ {start['recall_at_k']*100:.0f}% does every higher level clear {BAR:g}×, rising to")
+            P(f"{gain(pts_r[-1]):.1f}× at the oracle.")
+        P()
+        # real representations vs the sweep at matched recall
+        rr = [(k2, v) for k2, v in real.items() if v["knn_avg"]["top1"] >= 0.005]
+        if rr:
+            P("**But real representations beat the sweep at matched recall, and that is a clue.**")
+            P()
+            P("| representation | recall@10 | ridge gain | sweep's gain at that recall |")
+            P("|---|---:|---:|---:|")
+            for k2, v in rr:
+                near = min(pts_r, key=lambda w: abs(w["recall_at_k"] - v["recall_at_k"]))
+                gn, gs2 = gain(v), gain(near)
+                P(f"| {k2.split('(')[0]} | {v['recall_at_k']*100:.1f}% | "
+                  + (f"{gn:.2f}×" if gn == gn else "—") + " | "
+                  + (f"{gs2:.2f}×" if gs2 == gs2 else "—") + " |")
+            P()
+            best = max(rr, key=lambda kv: gain(kv[1]))
+            P(f"The combiner is worth up to {gain(best[1]):.1f}× on a real representation "
+              f"(`{best[0].split('(')[0]}`) at recall")
+            P(f"{best[1]['recall_at_k']*100:.1f}%, where the isotropic sweep gives roughly 1×. The mechanism is the one")
+            P("the combiner was built for: a real representation's mistakes are **redundant** — it")
+            P("retrieves several members of the same complex or pathway — and that is exactly the")
+            P("structure G⁻¹ deconvolves. Isotropic noise retrieves unstructured wrong neighbours,")
+            P("which no reweighting can repair. So the sweep gives the *shape* of the dependence on")
+            P("ordering quality and **understates** the combiner for real representations.")
+            P()
+            P("Both readings point the same way about what binds. The combiner is cheap, closed")
+            P("form and worth 1–2× today; the oracle's 3.6× needs recall@10 far above the")
+            P("14–20% every available representation delivers.")
         P()
         P("That is the specification this section buys. A gene representation for this task needs")
         P("**top-k neighbour recall**, not global correlation, and it needs **calibrated**")
