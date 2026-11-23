@@ -183,33 +183,61 @@ def main():
             P(f"Only from recall@10 ≈ {start['recall_at_k']*100:.0f}% does every higher level clear {BAR:g}×, rising to")
             P(f"{gain(pts_r[-1]):.1f}× at the oracle.")
         P()
-        # real representations vs the sweep at matched recall
-        rr = [(k2, v) for k2, v in real.items() if v["knn_avg"]["top1"] >= 0.005]
-        if rr:
-            P("**But real representations beat the sweep at matched recall, and that is a clue.**")
-            P()
-            P("| representation | recall@10 | ridge gain | sweep's gain at that recall |")
-            P("|---|---:|---:|---:|")
-            for k2, v in rr:
-                near = min(pts_r, key=lambda w: abs(w["recall_at_k"] - v["recall_at_k"]))
-                gn, gs2 = gain(v), gain(near)
-                P(f"| {k2.split('(')[0]} | {v['recall_at_k']*100:.1f}% | "
-                  + (f"{gn:.2f}×" if gn == gn else "—") + " | "
-                  + (f"{gs2:.2f}×" if gs2 == gs2 else "—") + " |")
-            P()
-            best = max(rr, key=lambda kv: gain(kv[1]))
-            P(f"The combiner is worth up to {gain(best[1]):.1f}× on a real representation "
-              f"(`{best[0].split('(')[0]}`) at recall")
-            P(f"{best[1]['recall_at_k']*100:.1f}%, where the isotropic sweep gives roughly 1×. The mechanism is the one")
-            P("the combiner was built for: a real representation's mistakes are **redundant** — it")
-            P("retrieves several members of the same complex or pathway — and that is exactly the")
-            P("structure G⁻¹ deconvolves. Isotropic noise retrieves unstructured wrong neighbours,")
-            P("which no reweighting can repair. So the sweep gives the *shape* of the dependence on")
-            P("ordering quality and **understates** the combiner for real representations.")
-            P()
-            P("Both readings point the same way about what binds. The combiner is cheap, closed")
-            P("form and worth 1–2× today; the oracle's 3.6× needs recall@10 far above the")
-            P("14–20% every available representation delivers.")
+        # Real representations vs the sweep at matched recall. On K562 they do BETTER
+        # than the sweep's combiner and on RPE1 WORSE, so the redundancy story that K562
+        # alone suggests does not replicate and is not claimed. Computed per line and the
+        # direction checked, rather than generalised from the first line looked at.
+        def sweep_of(dsx):
+            cc = curve["datasets"][dsx]["curve"]
+            return sorted(cc.values(), key=lambda v: v["recall_at_k"])
+        def gain_of(v):
+            return (v["gls"]["top1"] / v["knn_avg"]["top1"]
+                    if v["knn_avg"]["top1"] >= 0.005 else float("nan"))
+        P("**How the real representations sit against the sweep**, matched on recall@10:")
+        P()
+        P("| line | representation | recall@10 | kNN: real vs sweep | ridge gain: real vs sweep |")
+        P("|---|---|---:|---:|---:|")
+        dirs = {}
+        for dsx in ds_list:
+            if dsx not in curve["datasets"]:
+                continue
+            sw = sweep_of(dsx)
+            for k2, v in curve["datasets"][dsx]["real"].items():
+                if v["knn_avg"]["top1"] < 0.005:
+                    continue
+                near = min(sw, key=lambda w: abs(w["recall_at_k"] - v["recall_at_k"]))
+                gr, gsw = gain_of(v), gain_of(near)
+                P(f"| {SHORT.get(dsx,dsx)} | {k2.split('(')[0].replace('_',' ')} | "
+                  f"{v['recall_at_k']*100:.1f}% | "
+                  f"{v['knn_avg']['top1']*100:.2f}% vs {near['knn_avg']['top1']*100:.2f}% | "
+                  + (f"{gr:.2f}× vs {gsw:.2f}×" if gr == gr and gsw == gsw else "—") + " |")
+                if k2 == "go_jaccard" and gr == gr and gsw == gsw:
+                    dirs[dsx] = gr - gsw
+        P()
+        P("**One reading holds on both lines.** GO's *kNN* returns less than an isotropic")
+        P("corruption of matched recall (2.87% vs 4.03% on K562; 1.54% vs 3.21% on RPE1), so GO's")
+        P("misses are more adversarial than random — when it retrieves the wrong neighbours it")
+        P("retrieves genes that are genuinely confusable with the target, not arbitrary ones.")
+        P()
+        if len(dirs) >= 2 and not (all(v > 0 for v in dirs.values()) or all(v < 0 for v in dirs.values())):
+            P("**One reading does not.** Whether the *combiner* does better on a real")
+            P("representation than on a matched corruption goes opposite ways on the two lines")
+            P("(" + ", ".join(f"{SHORT.get(d,d)} {'better' if v > 0 else 'worse'} by {abs(v):.2f}×"
+                              for d, v in dirs.items()) + "). A tempting story — that real")
+            P("mistakes are *redundant*, retrieving several members of one complex, which is exactly")
+            P("the structure G⁻¹ deconvolves — fits K562 and is refuted by RPE1. So it is recorded")
+            P("as unexplained rather than asserted, and the isotropic sweep is not a reliable")
+            P("predictor of the combiner's value on a real representation in either direction.")
+        elif len(dirs) >= 2:
+            P("**And it holds in the same direction on both lines**, so the sweep systematically")
+            P(("understates" if list(dirs.values())[0] > 0 else "overstates")
+              + " the combiner for real representations.")
+        P()
+        P("What *is* consistent: the combiner's large gains need high ordering quality. It reaches")
+        P(", ".join(f"{gain_of(sweep_of(d)[-1]):.1f}× on {SHORT.get(d,d)}" for d in ds_list
+                    if d in curve["datasets"]) + " at the oracle, against 1.1–2.1× on any")
+        P("available representation, and the ridge solve can even fall *below* plain averaging at")
+        P("middling quality because it amplifies whatever ordering it is handed.")
         P()
         P("That is the specification this section buys. A gene representation for this task needs")
         P("**top-k neighbour recall**, not global correlation, and it needs **calibrated**")
