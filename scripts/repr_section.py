@@ -244,7 +244,9 @@ def main():
     if stats["datasets"]:
         b0 = next((v.get("median_rank_baseline") for v in stats["datasets"].get(ds_list[0], {}).values()
                    if isinstance(v, dict) and "median_rank_baseline" in v), None)
-        P("Paired over **genes** (a gene's ~1.8 queries are not independent evidence), Wilcoxon")
+        qpg = ", ".join(f"~{sel['datasets'][d]['n_queries'] / sel['datasets'][d]['K']:.1f} on {SHORT.get(d,d)}"
+                        for d in ds_list)
+        P(f"Paired over **genes** (a gene's queries — {qpg} — are not independent evidence), Wilcoxon")
         P("signed rank on per-gene rank against `go__knn_avg`. Median rank in this table is per")
         P("*gene* — each gene's queries are averaged first — so it differs slightly from the")
         P("per-*query* median in the table above"
@@ -268,13 +270,28 @@ def main():
                                  f"{r['win_rate_excl_ties']*100:.0f}% · {r['wilcoxon_p']:.1e}")
             P(f"| `{key}` | " + " | ".join(cells) + " |")
         P()
+        def ps(d, k):
+            return stats["datasets"].get(d, {}).get(k)
         P("Read against the win rates, the top-1 numbers are less impressive than they look.")
-        P("`xline__gls` improves K562's median rank (35.5 → 29.0) but wins on only 53.4% of")
-        P("genes, p = 0.017 — a real but narrow effect concentrated at the top of the ranking.")
-        P("On RPE1 the same row is significantly **worse** than GO-kNN on rank (125 → 231).")
-        P("And `learned__knn_avg` has the best median rank of any prior-only row on K562")
-        P("(24.0, p = 2e-11) while its top-1 is *below* GO's: the learned combination genuinely")
-        P("improves the ordering and genuinely does not improve the top slot.")
+        for d in ds_list:
+            r = ps(d, "xline__gls")
+            if not r:
+                continue
+            better = r["win_rate_excl_ties"] > 0.5 and r["wilcoxon_p"] < 0.05
+            worse = r["win_rate_excl_ties"] < 0.5 and r["wilcoxon_p"] < 0.05
+            P(f"On {SHORT.get(d,d)} `xline__gls` moves the per-gene median rank "
+              f"{r['median_rank_baseline']:.1f} → {r['median_rank_method']:.1f} and wins on "
+              f"{r['win_rate_excl_ties']*100:.1f}% of genes, p = {r['wilcoxon_p']:.2g}"
+              + (" — a real but narrow effect concentrated at the top of the ranking." if better else
+                 " — significantly **worse** than GO-kNN on rank." if worse else " — not significant."))
+        d0 = ds_list[0]
+        r = ps(d0, "learned__knn_avg")
+        if r and r["wilcoxon_p"] < 0.05 and r["win_rate_excl_ties"] > 0.5 \
+                and m(d0, "learned__knn_avg") < m(d0, "go__knn_avg"):
+            P(f"And `learned__knn_avg` improves {SHORT.get(d0,d0)}'s per-gene median rank to "
+              f"{r['median_rank_method']:.1f} (p = {r['wilcoxon_p']:.0e}) while its top-1 is *below* GO's")
+            P(f"({m(d0,'learned__knn_avg')*100:.2f}% vs {m(d0,'go__knn_avg')*100:.2f}%): the learned combination genuinely improves")
+            P("the ordering and genuinely does not improve the top slot.")
         P()
         # the cross-line kernel split by whether the other line actually measured the gene
         cov = {d: stats["datasets"].get(d, {}).get("_xline_by_prior_coverage")
@@ -295,19 +312,34 @@ def main():
                       f"{v['median_rank_go_knn']:.1f} → {v['median_rank_xline_gls']:.1f} | "
                       f"{v['top1_go_knn']*100:.1f}% → {v['top1_xline_gls']*100:.1f}% |")
             P()
-            P("Where the other cell line really measured the gene the improvement is large and")
-            P("consistent on both lines — RPE1 top-1 2.1% → 6.1% with median rank 38.8 → 20.2,")
-            P("K562 2.4% → 4.0% with 35.0 → 28.5. Where the row is imputed it is destroyed")
-            P("(RPE1 383 → 695). RPE1's bad aggregate is therefore an artefact of 45% imputed")
-            P("rows, not evidence against the cross-line signal, and the mechanism is tested on")
-            P("the mask rather than inferred from the aggregate.")
+            # every number below from paired_stats.json -- an earlier version typed them
+            gr_ = {d: cv["groups"] for d, cv in cov.items() if cv}
+            def ratio(v):
+                return v["top1_xline_gls"] / v["top1_go_knn"] if v["top1_go_knn"] > 0 else float("nan")
+            meas = {d: g_["real_prior"] for d, g_ in gr_.items() if "real_prior" in g_}
+            imp = {d: g_["mean_imputed"] for d, g_ in gr_.items() if "mean_imputed" in g_}
+            P("Where the other cell line really measured the gene the improvement holds on both lines — "
+              + "; ".join(f"{SHORT.get(d,d)} top-1 {v['top1_go_knn']*100:.1f}% → {v['top1_xline_gls']*100:.1f}%, "
+                          f"median rank {v['median_rank_go_knn']:.1f} → {v['median_rank_xline_gls']:.1f}"
+                          for d, v in meas.items()) + ".")
+            big = max(imp.items(), key=lambda kv: kv[1]["n_genes"], default=None)
+            if big:
+                d, v = big
+                frac = v["n_genes"] / (v["n_genes"] + meas.get(d, {"n_genes": 0})["n_genes"])
+                P(f"Where the row is imputed it is destroyed ({SHORT.get(d,d)} median rank "
+                  f"{v['median_rank_go_knn']:.0f} → {v['median_rank_xline_gls']:.0f}). {SHORT.get(d,d)}'s bad aggregate is therefore")
+                P(f"an artefact of {frac*100:.0f}% imputed rows, not evidence against the cross-line signal,")
+                P("and the mechanism is tested on the mask rather than inferred from the aggregate.")
             P()
+            rs = sorted(ratio(v) for v in meas.values() if ratio(v) == ratio(v))
+            rtxt = (f"{rs[0]:.1f}–{rs[-1]:.1f}×" if len(rs) > 1 else f"{rs[0]:.1f}×") if rs else "—"
             P("The honest statement of the one thing that moves this metric: **a gene unseen in")
-            P("*this* cell line but measured in another is identifiable roughly 2–3× better than")
-            P("GO gets it** (top-1 2.1% → 6.1% on RPE1, 2.4% → 4.0% on K562, paired within the")
-            P("covered genes). That is gap 0's unseen-*context* axis doing the work, not prior")
-            P("knowledge, and it is consistent with everything else here: measurement has value,")
-            P("annotation does not.")
+            P(f"*this* cell line but measured in another is identifiable {rtxt} better than GO")
+            P("gets it** (" + ", ".join(f"top-1 {v['top1_go_knn']*100:.1f}% → {v['top1_xline_gls']*100:.1f}% on {SHORT.get(d,d)}"
+                                      for d, v in meas.items())
+              + ", paired within the covered genes). That is gap 0's unseen-*context* axis doing")
+            P("the work, not prior knowledge, and it is consistent with everything else here:")
+            P("measurement has value, annotation does not.")
             P()
 
     if curve["datasets"]:
@@ -417,10 +449,23 @@ def main():
                 if k2 == "go_jaccard" and gr == gr and gsw == gsw:
                     dirs[dsx] = gr - gsw
         P()
-        P("**One reading holds on both lines.** GO's *kNN* returns less than an isotropic")
-        P("corruption of matched recall (2.87% vs 4.03% on K562; 1.54% vs 3.21% on RPE1), so GO's")
-        P("misses are more adversarial than random — when it retrieves the wrong neighbours it")
-        P("retrieves genes that are genuinely confusable with the target, not arbitrary ones.")
+        adv = {}
+        for dsx in ds_list:
+            if dsx not in curve["datasets"] or "go_jaccard" not in curve["datasets"][dsx]["real"]:
+                continue
+            gv = curve["datasets"][dsx]["real"]["go_jaccard"]
+            nr = min(sweep_of(dsx), key=lambda w: abs(w["recall_at_k"] - gv["recall_at_k"]))
+            adv[dsx] = (gv["knn_avg"]["top1"], nr["knn_avg"]["top1"])
+        txt = "; ".join(f"{a*100:.2f}% vs {b*100:.2f}% on {SHORT.get(d,d)}" for d, (a, b) in adv.items())
+        if adv and all(a < b for a, b in adv.values()):
+            P(f"**One reading holds on {'both lines' if len(adv) > 1 else 'this line'}.** "
+              "GO's *kNN* returns less than an isotropic")
+            P(f"corruption of matched recall ({txt}), so GO's")
+            P("misses are more adversarial than random — when it retrieves the wrong neighbours it")
+            P("retrieves genes that are genuinely confusable with the target, not arbitrary ones.")
+        elif adv:
+            P(f"GO's *kNN* against an isotropic corruption of matched recall: {txt} — not")
+            P("consistently below it, so no claim about the structure of GO's misses is made.")
         P()
         # per line: on how many real rows does the combiner beat the sweep's at matched recall?
         beat = {}

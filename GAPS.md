@@ -77,7 +77,7 @@ estimating inner products, not in choosing neighbours: handed the true inner pro
 GO's own 100-gene neighbourhood reaches **38.2% / 41.1%** — 86% / 85% of the oracle.
 Learning them from pair features reaches 6.5% on K562 (2.2× GO-kNN, paired p = 4e-19)
 but does not replicate on RPE1, where it is worse than GO-kNN on rank. And a gene
-unseen in *this* cell line but measured in another is identifiable **2–3× better than GO
+unseen in *this* cell line but measured in another is identifiable **1.7–2.9× better than GO
 manages**, paired within the genes the other line actually covers (top-1 2.1% → 6.1% on
 RPE1, 2.4% → 4.0% on K562). That is gap 0's unseen-*context* axis doing the work, which
 is the same conclusion again: measurement has value, annotation does not. See "The
@@ -465,6 +465,13 @@ real signatures to do the same. Static GO coverage, the floor Framing B used, is
 - Caveats: 3 splits × 3 seeds; one predictor (GO-kNN), so which genes are informative may
   change with a better predictor; the peek methods read candidate signatures and are not
   prospective design.
+  > **Tested 2026-11-23.** No prior-only predictor improves on GO-kNN. Of 20 checked — 12
+  > gene representations, three ways of combining neighbours, and learned or recalibrated
+  > inner products — none beats it on both top-1 and median rank on both lines; GO-IDF
+  > does on RPE1 alone, by 0.08 points of top-1. So GO-kNN is not a weak choice hiding a
+  > better acquisition result. The only predictors that do beat it use the other cell
+  > line's measurements (1.7–2.9× on the genes it covers). See "The unseen-gene gap is a
+  > combiner problem".
 
 Reproduce with `./submit.sh rlacq`, all CPU: cache 2 min, baselines ≤ 45 min, 15 training
 tasks ≤ 45 min, report 2 min. Outputs go to
@@ -905,7 +912,7 @@ scrambles the rest — the same shape Framing A found when it whitened the score
 combiner is not free money at today's representations; it buys the top slot and sells
 the middle of the ranking.
 
-Paired over **genes** (a gene's ~1.8 queries are not independent evidence), Wilcoxon
+Paired over **genes** (a gene's queries — ~1.8 on K562, ~1.5 on RPE1 — are not independent evidence), Wilcoxon
 signed rank on per-gene rank against `go__knn_avg`. Median rank in this table is per
 *gene* — each gene's queries are averaged first — so it differs slightly from the
 per-*query* median in the table above (34 vs 35.5 for GO-kNN on K562).
@@ -918,12 +925,11 @@ per-*query* median in the table above (34 vs 35.5 for GO-kNN on K562).
 | `learned__knn_avg` | 24 · 55% · 2.0e-11 | 125 · identical to baseline |
 
 Read against the win rates, the top-1 numbers are less impressive than they look.
-`xline__gls` improves K562's median rank (35.5 → 29.0) but wins on only 53.4% of
-genes, p = 0.017 — a real but narrow effect concentrated at the top of the ranking.
-On RPE1 the same row is significantly **worse** than GO-kNN on rank (125 → 231).
-And `learned__knn_avg` has the best median rank of any prior-only row on K562
-(24.0, p = 2e-11) while its top-1 is *below* GO's: the learned combination genuinely
-improves the ordering and genuinely does not improve the top slot.
+On K562 `xline__gls` moves the per-gene median rank 35.5 → 29.0 and wins on 53.4% of genes, p = 0.017 — a real but narrow effect concentrated at the top of the ranking.
+On RPE1 `xline__gls` moves the per-gene median rank 125.0 → 231.0 and wins on 48.5% of genes, p = 0.00025 — significantly **worse** than GO-kNN on rank.
+And `learned__knn_avg` improves K562's per-gene median rank to 24.0 (p = 2e-11) while its top-1 is *below* GO's
+(2.42% vs 2.87%): the learned combination genuinely improves
+the ordering and genuinely does not improve the top slot.
 
 **The cross-line row splits cleanly on whether the other line measured the gene.**
 `related_work.py` mean-imputes genes a prior source lacks, so the aggregate mixes a
@@ -936,19 +942,16 @@ real measurement with a constant. Separating them, paired within each group:
 | RPE1 | other line measured it | 848 | 38.8 → 20.2 | 2.1% → 6.1% |
 | RPE1 | mean-imputed | 695 | 383.0 → 695.0 | 1.0% → 0.0% |
 
-Where the other cell line really measured the gene the improvement is large and
-consistent on both lines — RPE1 top-1 2.1% → 6.1% with median rank 38.8 → 20.2,
-K562 2.4% → 4.0% with 35.0 → 28.5. Where the row is imputed it is destroyed
-(RPE1 383 → 695). RPE1's bad aggregate is therefore an artefact of 45% imputed
-rows, not evidence against the cross-line signal, and the mechanism is tested on
-the mask rather than inferred from the aggregate.
+Where the other cell line really measured the gene the improvement holds on both lines — K562 top-1 2.4% → 4.0%, median rank 35.0 → 28.5; RPE1 top-1 2.1% → 6.1%, median rank 38.8 → 20.2.
+Where the row is imputed it is destroyed (RPE1 median rank 383 → 695). RPE1's bad aggregate is therefore
+an artefact of 45% imputed rows, not evidence against the cross-line signal,
+and the mechanism is tested on the mask rather than inferred from the aggregate.
 
 The honest statement of the one thing that moves this metric: **a gene unseen in
-*this* cell line but measured in another is identifiable roughly 2–3× better than
-GO gets it** (top-1 2.1% → 6.1% on RPE1, 2.4% → 4.0% on K562, paired within the
-covered genes). That is gap 0's unseen-*context* axis doing the work, not prior
-knowledge, and it is consistent with everything else here: measurement has value,
-annotation does not.
+*this* cell line but measured in another is identifiable 1.7–2.9× better than GO
+gets it** (top-1 2.4% → 4.0% on K562, top-1 2.1% → 6.1% on RPE1, paired within the covered genes). That is gap 0's unseen-*context* axis doing
+the work, not prior knowledge, and it is consistent with everything else here:
+measurement has value, annotation does not.
 
 ### How good would a representation have to be?
 
