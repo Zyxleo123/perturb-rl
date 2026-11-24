@@ -31,9 +31,10 @@ SHORT = {"replogle_k562_essential": "K562", "replogle_rpe1_essential": "RPE1"}
 OLD_BASE = ["go_facility", "go_facility_idf", "go_facility_emb", "greedy_aux_all", "cheat_rep_all"]
 OLD_RUNS = ["pg_tab", "critic_shrink", "ppo_peek", "ppo_blind"]
 _SB = ["sim_go_facility", "sim_sig_facility", "sim_greedy_aux_all"]
-_SR = ["sim_pg_tab", "sim_pg_tab_boot", "sim_critic_only", "sim_critic_shrink", "sim_ppo_peek"]
+_SR = ["sim_pg_tab", "sim_pg_tab_boot", "sim_critic_only", "sim_critic_shrink", "sim_ppo_peek",
+       "sim_greedy_combo", "sim_pg_combo"]
 # two simulators (rl_sim.POPS): `all` source genes, and `_tpop` = the deployment's population
-SUFFIXES = ("_tpop", "_tpred")
+SUFFIXES = ("_tpop", "_tpred", "_timp")
 SIM_BASE = ["go_facility_cov"] + _SB + [m + x for x in SUFFIXES for m in _SB]
 SIM_RL = _SR + [m + x for x in SUFFIXES for m in _SR]
 
@@ -53,6 +54,8 @@ LABEL = {
     "sim_critic_only": "critic in S, greedy",
     "sim_critic_shrink": "critic-shrunk greedy in S",
     "sim_ppo_peek": "PPO feature policy trained in S",
+    "sim_greedy_combo": "greedy on simulator MRR + T's GO facility objective",
+    "sim_pg_combo": "**REINFORCE on simulator MRR + T's GO facility objective**",
     "ppo_blind": "PPO blind (T's GO only)",
     "greedy_aux_all": "greedy on T's own signatures (peek)",
     "pg_tab": "REINFORCE on T's own signatures (peek)",
@@ -60,11 +63,12 @@ LABEL = {
     "ppo_peek": "PPO feature policy (peek)",
     "cheat_rep_all": "cheat: greedy on T's report genes",
 }
-for _x, _tag in (("_tpop", "S[T genes]"), ("_tpred", "S[T genes, T's GO]")):
+# one label per (method, simulator): the simulator is named in brackets, never inferred
+SIM_TAG = {"": "sim: S", "_tpop": "sim: S on T's genes", "_tpred": "sim: S on T's genes, T's GO",
+           "_timp": "sim: T atlas + imputed candidates"}
+for _x in SUFFIXES:
     for _m in _SB + _SR:
-        LABEL[_m + _x] = LABEL[_m].replace("**", "").replace("S reward", _tag + " reward").replace(
-            "S signatures", "S signatures over T genes").replace("S's GO view", "S's GO view over T genes").replace(
-            " in S", " in " + _tag)
+        LABEL[_m + _x] = LABEL[_m].replace("**", "") + f" [{SIM_TAG[_x]}]"
 
 
 def load_jsonl(p):
@@ -96,12 +100,25 @@ def main():
         else:
             runs += json.load(open(p))
     keys = sorted({(r["dataset"], r["split"]) for r in sim_base if r["strategy"] == "bridge"})
+    # PJ_SIM_REPORT_SPLITS restricts the report to some splits (e.g. the held-out
+    # confirmation splits), written under PJ_SIM_REPORT_TAG so the two never mix
+    # default: the RL grid's own splits (PJ_RLA_SPLITS, 4 104 204 in env/common.sh)
+    want = [int(x) for x in (os.environ.get("PJ_SIM_REPORT_SPLITS") or os.environ.get("PJ_RLA_SPLITS", "")).split()]
+    tag = os.environ.get("PJ_SIM_REPORT_TAG", "")
+    if want:
+        keys = [k for k in keys if k[1] in want]
+        sim_base = [r for r in sim_base if r["split"] in want]
+        runs = [r for r in runs if r["split"] in want]
     if not keys:
         print("GATE NOT MET: no sim baselines on disk (did jobs/60_sim_base run? NFS can hide fresh files ~10 min)")
         return 0
-    old_base = []
+    old_base, fresh = [], set()
     for ds, sp in keys:
-        old_base += load_jsonl(os.path.join(root, "baselines", f"{ds}__s{sp}.jsonl"))
+        p = os.path.join(root, "baselines", f"{ds}__s{sp}.jsonl")
+        if os.path.exists(p):
+            old_base += load_jsonl(p)
+        else:                    # a confirmation split: its floors come from the sim baselines
+            fresh.add((ds, sp))
     old_runs = []
     for p in sorted(glob.glob(os.path.join(root, "runs", "*.json"))):
         if not p.endswith(".error.json"):
@@ -146,6 +163,8 @@ def main():
     for r in sim_base:
         if r["strategy"] in SIM_BASE:
             add(r, r["strategy"])
+        elif r["strategy"] in OLD_BASE[:3] and (r["dataset"], r["split"]) in fresh:
+            add(r, r["strategy"])
     for r in runs:
         add(r, r["method"])
     for ds, sp in keys:
@@ -187,9 +206,12 @@ def main():
                           "sim_greedy": split_mean(ds, sp, "sim_greedy_aux_all"),
                           "sim_greedy_tpop": split_mean(ds, sp, "sim_greedy_aux_all_tpop"),
                           "sim_greedy_tpred": split_mean(ds, sp, "sim_greedy_aux_all_tpred"),
+                          "sim_greedy_timp": split_mean(ds, sp, "sim_greedy_aux_all_timp"),
+                          **{"greedy_combo" + x: split_mean(ds, sp, "sim_greedy_combo" + x) for x in ("",) + SUFFIXES},
                           "sig_fac": split_mean(ds, sp, "sim_sig_facility"),
                           "sig_fac_tpop": split_mean(ds, sp, "sim_sig_facility_tpop"),
                           "sig_fac_tpred": split_mean(ds, sp, "sim_sig_facility_tpred"),
+                          "sig_fac_timp": split_mean(ds, sp, "sim_sig_facility_timp"),
                           "peek_pg": split_mean(ds, sp, "pg_tab"),
                           "cheat": split_mean(ds, sp, "cheat_rep_all")}
     for x in recs:
@@ -199,6 +221,8 @@ def main():
         # a simulator's methods face THAT simulator's greedy and S-signature facility
         for k in ("floor", "fac_cov", "sim_greedy", "sig_fac", "peek_pg"):
             kk = k + pop_of(x["method"]) if k in ("sim_greedy", "sig_fac") else k
+            if k == "sim_greedy" and "_combo" in x["method"]:   # combo faces greedy on the SAME combined reward
+                kk = "greedy_combo" + pop_of(x["method"])
             x[f"vs_{k}"] = x["mrr"] - R[kk]
         x["cheat_frac"] = (x["mrr"] - R["med"]) / (R["cheat"] - R["med"])
 
@@ -255,7 +279,7 @@ def main():
                "rescore_drift_max": float(np.max(drift)), "errors": errors,
                "sim_rl_runs_found": have, "sim_rl_runs_expected_at_3_seeds": expected,
                "records": recs, "random": {f"{k[0]}__s{k[1]}": v for k, v in rand.items()}}
-    with open(os.path.join(sim, "summary.json"), "w") as f:
+    with open(os.path.join(sim, f"summary{tag}.json"), "w") as f:
         json.dump(summary, f, indent=1, default=float)
 
     # ---------------------------------------------------- report.md
@@ -283,8 +307,9 @@ def main():
           "Spearman over 100 random covered subsets of 100 genes.", "",
           "| split | S own reward vs T report | S report vs T report | S own vs S report |", "|---|---:|---:|---:|"]
     for k, v in probes.items():
-        L.append(f"| {k} | {v['spearman_s_own_vs_t_rep']:+.3f} | {v['spearman_s_rep_vs_t_rep']:+.3f} | "
-                 f"{v['spearman_s_own_vs_s_rep']:+.3f} |")
+        fm = lambda x: "—" if x is None else f"{x:+.3f}"  # noqa: E731  (timp has no S-side report)
+        L.append(f"| {k} | {fm(v['spearman_s_own_vs_t_rep'])} | {fm(v['spearman_s_rep_vs_t_rep'])} | "
+                 f"{fm(v['spearman_s_own_vs_s_rep'])} |")
     L += ["", "## How much of the simulator's gain over greedy survives in the target", "",
           "| line · method | S-side report gain over greedy | T-side report gain over greedy |", "|---|---:|---:|"]
     for k, v in transfer.items():
@@ -293,7 +318,7 @@ def main():
     L += [f"- {k}: {v}" for k, v in bridges.items()]
     if errors:
         L += ["", "## Errors", ""] + [f"- {e}" for e in errors]
-    with open(os.path.join(sim, "report.md"), "w") as f:
+    with open(os.path.join(sim, f"report{tag}.md"), "w") as f:
         f.write("\n".join(L) + "\n")
     print("\n".join(L))
     return 0

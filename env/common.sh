@@ -93,9 +93,11 @@ export PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS PJ_RLA_PER_TASK
 # Two simulators (scripts/rl_sim.py POPS): `all` rewards on every source gene outside the
 # candidates and T's report genes; `_tpop` methods reward only on the source rows of T's
 # own measured atlas, i.e. the deployment's gene population; `_tpred` methods additionally
-# use T's GO Jaccard inside the simulator, so only the signatures come from the source.
-: "${PJ_SIM_METHODS:=sim_pg_tab sim_pg_tab_boot sim_critic sim_ppo_peek sim_pg_tab_tpop sim_pg_tab_boot_tpop sim_critic_tpop sim_ppo_peek_tpop sim_pg_tab_tpred sim_pg_tab_boot_tpred sim_critic_tpred sim_ppo_peek_tpred}"
-: "${PJ_SIM_POPS:=all tpop tpred}"   # which simulators the baselines array covers
+# use T's GO Jaccard inside the simulator, so only the signatures come from the source;
+# `_timp` is T's own peek world with each candidate's hidden signature imputed from the
+# source (re-centred) or GO-kNN -- needs ./submit.sh sim_readout first.
+: "${PJ_SIM_METHODS:=sim_pg_tab sim_pg_tab_boot sim_critic sim_ppo_peek sim_pg_tab_tpop sim_pg_tab_boot_tpop sim_critic_tpop sim_ppo_peek_tpop sim_pg_tab_tpred sim_pg_tab_boot_tpred sim_critic_tpred sim_ppo_peek_tpred sim_pg_tab_timp sim_pg_tab_boot_timp sim_critic_timp sim_ppo_peek_timp}"
+: "${PJ_SIM_POPS:=all tpop tpred timp}"   # which simulators the baselines array covers
 : "${PJ_SIM_PER_TASK:=12}"     # grid entries run in parallel in one array task
 : "${PJ_SIM_MAXPAR:=6}"
 : "${PJ_SIM_FORCE:=}"          # 1 = redo runs whose result file exists

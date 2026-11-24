@@ -66,7 +66,17 @@ import numpy as np  # noqa: E402
 
 import rl_acquire as RA  # noqa: E402
 
-BASE_METHODS = ("sim_pg_tab", "sim_pg_tab_boot", "sim_critic", "sim_ppo_peek")
+BASE_METHODS = ("sim_pg_tab", "sim_pg_tab_boot", "sim_critic", "sim_ppo_peek", "sim_pg_combo", "sim_greedy_combo")
+# Added 2026-11-23 after the first three simulators: REINFORCE in S picks sets as good as
+# GO facility location but nearly DISJOINT from it (22-34 of 100 shared, chance ~23), and
+# 1.5-2x closer than chance to the peek optimum. The two carry different information --
+# which genes have informative signatures (the simulator) and what T's GO-kNN needs for
+# coverage (facility location). `combo` optimises both: reward = z(simulator MRR) +
+# COMBO_LAM * z(T's GO facility objective), each standardised on random sets. COMBO_LAM
+# is fixed at 1 in advance, NOT tuned (nothing may be selected on the report genes).
+# sim_greedy_combo is the non-RL optimiser of the identical reward.
+COMBO_LAM = 1.0
+N_NORM = 256
 # Two simulators, differing only in WHICH source genes the reward is computed on:
 #   all   every gene S measured outside the candidates and T's report genes (the first
 #         run). On K562 that is 1,065 RPE1 genes, 695 of which K562 never screened, so
@@ -78,8 +88,17 @@ BASE_METHODS = ("sim_pg_tab", "sim_pg_tab_boot", "sim_critic", "sim_ppo_peek")
 #         predictor) instead of S's: GO terms are filtered per line, so S's Jaccard is a
 #         slightly different predictor. Every gene tpop touches is a T gene, so T's GO
 #         row exists for all of them. Only the SIGNATURES then come from S.
-# Suffix "_tpop" / "_tpred" on a method or baseline name selects the second / third.
-POPS = ("all", "tpop", "tpred")
+#   timp  NOT a source-line world at all: the TARGET's own peek world -- T's measured
+#         atlas (aux) as reward genes with their real T queries, T's GO, T's candidate
+#         slate -- in which each candidate's hidden T signature is replaced by an
+#         ESTIMATE: its S signature on the shared readout, re-centred by the mean T - S
+#         difference over aux genes both lines measured; GO-kNN from T's atlas for a
+#         candidate S never measured. This is the peek pipeline (where RL won) with the one
+#         forbidden input imputed. T's report-gene rows are NaN and only aux genes'
+#         queries are kept, so no candidate's or report gene's T measurement can be read.
+#         All 437 candidates are offered.
+# Suffix "_tpop" / "_tpred" / "_timp" on a method or baseline name selects that simulator.
+POPS = ("all", "tpop", "tpred", "timp")
 METHODS = BASE_METHODS + tuple(m + "_" + p for p in POPS[1:] for m in BASE_METHODS)
 
 
@@ -89,6 +108,65 @@ def split_pop(name):
         if name.endswith("_" + p):
             return name[:-len(p) - 1], p
     return name, "all"
+
+
+def world_from(name, Y, Q, owner, F, cands):
+    """An rl_acquire.World built from arrays instead of a cache file; the same fields,
+    computed the same way as World.__init__."""
+    W = RA.World.__new__(RA.World)
+    W.name, W.Y, W.Q, W.owner, W.F, W.cands = name, Y.astype(np.float32), Q.astype(np.float32), \
+        np.asarray(owner, np.int64), F.astype(np.float32), cands
+    W.K = W.Y.shape[0]
+    W.JJ = RA.RH.jaccard(W.F, W.F)
+    Yd = W.Y.astype(np.float64)
+    with np.errstate(invalid="ignore"):
+        W.YY = Yd @ Yd.T
+        nrm = np.sqrt(np.maximum(np.diag(W.YY), 1e-24))
+        W.CC = (W.YY / nrm[:, None] / nrm[None, :]).astype(np.float32)
+        W.lognorm = np.log(nrm).astype(np.float32)
+    W.ynorm = nrm
+    W.QY = (RA.RH.unit(W.Q) @ W.Y.T).astype(np.float32)
+    W.deg = np.log1p(W.F.sum(1)).astype(np.float32)
+    order = np.argsort(W.owner, kind="stable")
+    b = np.searchsorted(W.owner[order], np.arange(W.K + 1))
+    W.q_of = [order[b[i]:b[i + 1]] for i in range(W.K)]
+    W._rich = None
+    return W
+
+
+def imputed_world(WT, WS, dep_t, t2s, genes_t, genes_s):
+    """T's peek world with every candidate's T signature replaced by an estimate (see
+    POPS: timp). Returns the world and a description of the imputation."""
+    gs = {g: j for j, g in enumerate(genes_s)}
+    ct = np.array([j for j, g in enumerate(genes_t) if g in gs], np.int64)
+    cs = np.array([gs[genes_t[j]] for j in ct], np.int64)
+    act, aux = dep_t["act"], dep_t["aux"]
+    Y = np.full((WT.K, ct.size), np.nan, np.float32)
+    Y[aux] = WT.Y[aux][:, ct]
+    # re-centring, fitted on the atlas genes BOTH lines measured (GAPS gap 0: re-centring
+    # the other line beats a learned ridge map at every training size)
+    pa = aux[t2s[aux] >= 0]
+    delta = (WT.Y[pa][:, ct].astype(np.float64).mean(0) - WS.Y[t2s[pa]][:, cs].astype(np.float64).mean(0))
+    cov = act[t2s[act] >= 0]
+    unc = act[t2s[act] < 0]
+    Y[cov] = (WS.Y[t2s[cov]][:, cs] + delta).astype(np.float32)
+    if unc.size:      # S never measured it: the blind regime's own estimate, GO-kNN from T's atlas
+        J = WT.JJ[np.ix_(unc, aux)]
+        Y[unc] = RA.RH.go_knn_predict(J, Y[aux], Y[aux].mean(0)).astype(np.float32)
+    keep = np.isin(WT.owner, aux)      # only the measured atlas's queries exist in this world
+    W = world_from(f"{WT.name}[atlas]+{WS.name}[imputed candidates]", Y, WT.Q[keep][:, ct],
+                   WT.owner[keep], WT.F, WT.cands)
+
+    def cos(a, b):
+        a, b = RA.RH.unit(a), RA.RH.unit(b)
+        return np.einsum("ij,ij->i", a, b)
+    # how well re-centred S predicts T on the atlas genes both measured (legal: aux is
+    # measured). The same on the candidates is a DIAGNOSTIC written by the baselines job.
+    info = {"shared_readout": int(ct.size), "t_readout": int(len(genes_t)), "s_readout": int(len(genes_s)),
+            "n_paired_atlas": int(pa.size), "n_cand_from_S": int(cov.size), "n_cand_from_go_knn": int(unc.size),
+            "atlas_median_cos_recentred": float(np.median(cos(WT.Y[pa][:, ct], WS.Y[t2s[pa]][:, cs] + delta))),
+            "atlas_median_cos_raw": float(np.median(cos(WT.Y[pa][:, ct], WS.Y[t2s[pa]][:, cs])))}
+    return W, info, ct
 
 
 def hybrid_world(WT, WS):
@@ -117,10 +195,15 @@ def log(*a):
     RA.log(*a)
 
 
+def f4(x):
+    """A metric for a log line; None (e.g. timp's absent S-side report) prints as '-'."""
+    return "-" if x is None else f"{x:.4f}"
+
+
 class Bridge:
     """One deployment split of T and its image in the source line S."""
 
-    def __init__(self, WT, WS, split_seed, pop="all"):
+    def __init__(self, WT, WS, split_seed, pop="all", readout=None):
         if pop == "tpred":
             WS = hybrid_world(WT, WS)
         self.WT, self.WS, self.sp, self.pop = WT, WS, split_seed, pop
@@ -128,6 +211,19 @@ class Bridge:
         spos = {str(g): i for i, g in enumerate(WS.cands)}
         self.t2s = np.array([spos.get(str(g), -1) for g in WT.cands], np.int64)
         self.s2t = {int(s): int(t) for t, s in enumerate(self.t2s) if s >= 0}
+        self.imp_info = None
+        if pop == "timp":
+            # the simulator lives on T's own genes: indices are T indices throughout
+            self.WS, self.imp_info, self.imp_cols = imputed_world(WT, WS, dt, self.t2s, *readout)
+            self.src_name = WS.name
+            self.s2t = {int(t): int(t) for t in range(WT.K)}
+            self.act_t_cov = dt["act"]
+            self.dep_s = {"act": dt["act"], "aux": dt["aux"], "rep": dt["rep"]}
+            self.rep_t = RA.Reporter(WT, dt["rep"], dt["act"])
+            self.rep_s = None           # no S-side report: T's report genes are NaN here
+            self.own_s = RA.RewardSet(self.WS, dt["aux"])
+            return
+        self.src_name = WS.name
         cov = self.t2s[dt["act"]] >= 0
         self.act_t_cov = dt["act"][cov]
         rs = self.t2s[dt["rep"]]
@@ -155,6 +251,17 @@ class Bridge:
 
     def check(self):
         WT, WS, d = self.WT, self.WS, self.dep_s
+        if self.pop == "timp":
+            rep_nan = bool(np.isnan(WS.Y[self.dep_t["rep"]]).all())
+            cand_ok = bool(np.isfinite(WS.Y[d["act"]]).all() and np.isfinite(WS.Y[d["aux"]]).all())
+            no_hidden_q = not np.isin(WS.owner, np.concatenate([d["act"], d["rep"]])).any()
+            info = {"source": self.src_name, "pop": "timp", "act_t": int(d["act"].size),
+                    "act_covered": int(d["act"].size), "rep_t": int(self.dep_t["rep"].size),
+                    "aux_s": int(d["aux"].size), "report_rows_nan": rep_nan, "act_aux_rows_finite": cand_ok,
+                    "no_candidate_or_report_queries": bool(no_hidden_q), **self.imp_info}
+            if not (rep_nan and cand_ok and no_hidden_q):
+                raise RuntimeError(f"bridge check failed: {info}")
+            return info
         names_ok = all(str(WT.cands[t]) == str(WS.cands[s]) for s, t in self.s2t.items())
         sets = [set(d["act"].tolist()), set(d["aux"].tolist()), set(d["rep"].tolist())]
         disjoint = not (sets[0] & sets[1] or sets[0] & sets[2] or sets[1] & sets[2])
@@ -174,8 +281,100 @@ class Bridge:
     def diag(self, chosen_s):
         """S-side numbers for a set of S genes: its own reward on aux_S and the
         S-side report score. Both diagnostics; the reported number is T-side."""
-        return {"s_own_mrr": float(self.own_s.mrr(np.asarray(chosen_s, np.int64))),
-                "s_rep_mrr": float(self.rep_s(chosen_s)["mrr"])}
+        own = float(self.own_s.mrr(np.asarray(chosen_s, np.int64)))
+        if not np.isfinite(own):
+            raise RuntimeError("simulator reward is not finite: a NaN (hidden) row was read")
+        return {"s_own_mrr": own,
+                "s_rep_mrr": float(self.rep_s(chosen_s)["mrr"]) if self.rep_s is not None else None}
+
+
+class ComboReward:
+    """z(simulator MRR on aux_S) + lam * z(GO facility objective in T). The facility
+    objective is the quantity rl_acquire.go_facility greedily maximises: over T's
+    candidates + atlas (never its report genes), the summed GO Jaccard of each gene's
+    closest chosen gene, a chosen gene counting zero for itself. Prior-only, so legal.
+    Standardised on N_NORM random candidate sets drawn with a fixed seed."""
+
+    def __init__(self, br, lam=COMBO_LAM):
+        self.br, self.lam = br, lam
+        dt = br.dep_t
+        self.T = np.concatenate([dt["act"], dt["aux"]])
+        M = br.WT.JJ[self.T].astype(np.float64).copy()
+        M[np.arange(self.T.size), self.T] = 0.0
+        self.M = M
+        self.trow = np.full(br.WT.K, -1, np.int64)
+        self.trow[self.T] = np.arange(self.T.size)
+        A = br.dep_s["act"]
+        rng = np.random.default_rng(9500)
+        sets = [A[rng.choice(A.size, size=RA.B_DEPLOY, replace=False)] for _ in range(N_NORM)]
+        m = np.array([br.own_s.mrr(c) for c in sets])
+        f = np.array([self.fl(c) for c in sets])
+        self.mu_m, self.sd_m = float(m.mean()), float(m.std() + 1e-12)
+        self.mu_f, self.sd_f = float(f.mean()), float(f.std() + 1e-12)
+        self.norm_corr = float(np.corrcoef(m, f)[0, 1])
+
+    def fl(self, chosen_s):
+        ct = np.asarray(self.br.to_t(chosen_s), np.int64)
+        best = self.M[:, ct].max(1)
+        r = self.trow[ct]
+        best[r[r >= 0]] = 0.0
+        return float(best.sum() / self.T.size)
+
+    def mrr(self, chosen_s):      # the name RA.greedy and the PG loop call
+        c = np.asarray(chosen_s, np.int64)
+        return ((self.br.own_s.mrr(c) - self.mu_m) / self.sd_m
+                + self.lam * (self.fl(c) - self.mu_f) / self.sd_f)
+
+    def info(self):
+        return {"lam": self.lam, "mu_mrr": self.mu_m, "sd_mrr": self.sd_m, "mu_fl": self.mu_f, "sd_fl": self.sd_f,
+                "corr_mrr_fl_random_sets": self.norm_corr}
+
+
+def train_pg_reward(W, dep, seed, reward, curve_path, rep_fn):
+    """rl_acquire.train_pg_tab with the reward passed in: REINFORCE, leave-one-out
+    baseline, Adam, Plackett-Luce logits; identical settings (CFG pg_*)."""
+    C = RA.CFG
+    rng = np.random.default_rng(seed)
+    act = dep["act"]
+    nA, B = act.size, RA.B_DEPLOY
+    theta = np.zeros(nA)
+    m1, m2 = np.zeros(nA), np.zeros(nA)
+    curve = []
+    for it in range(1, C["pg_iters"] + 1):
+        orders, R = [], []
+        for _ in range(C["pg_samples"]):
+            o = np.argsort(-(theta + rng.gumbel(size=nA)))[:B]
+            orders.append(o)
+            R.append(reward.mrr(act[o]))
+        R = np.array(R)
+        n = R.size
+        adv = R - (R.sum() - R) / (n - 1)
+        u = np.exp(theta - theta.max())
+        grad = np.zeros(nA)
+        for o, a_ in zip(orders, adv):
+            Z = u.sum() - np.concatenate([[0.0], np.cumsum(u[o])[:-1]])
+            cz = np.cumsum(1.0 / Z)
+            tau = np.full(nA, B - 1)
+            tau[o] = np.arange(B)
+            g = -u * cz[tau]
+            g[o] += 1.0
+            grad += a_ * g
+        grad /= n
+        m1 = 0.9 * m1 + 0.1 * grad
+        m2 = 0.999 * m2 + 0.001 * grad ** 2
+        theta += C["pg_lr"] * (m1 / (1 - 0.9 ** it)) / (np.sqrt(m2 / (1 - 0.999 ** it)) + 1e-8)
+        if it % 50 == 0 or it == C["pg_iters"] or RA.SMOKE:
+            mode = act[np.argsort(-theta)[:B]]
+            r = rep_fn(mode)
+            row = {"iter": it, "sample_reward_mean": float(R.mean()), "mode_own_reward": float(reward.mrr(mode)),
+                   "rep_mrr": r["mrr"], "rep_top1": r["top1"]}
+            curve.append(row)
+            with open(curve_path, "w") as f:
+                for x in curve:
+                    f.write(json.dumps(x) + "\n")
+            log(f"  it={it:4d} sample R={R.mean():+.3f} mode own={row['mode_own_reward']:+.3f} rep mrr={r['mrr']:.4f}")
+    mode = act[np.argsort(-theta)[:B]]
+    return {"chosen": [int(x) for x in mode], "rep": rep_fn(mode), "own_reward": float(reward.mrr(mode))}
 
 
 def facility_on(M, A, T, B):
@@ -222,8 +421,8 @@ def run_baselines(br, old_rows, out):
             for x in rows:
                 f.write(json.dumps(x) + "\n")
         os.replace(out + ".tmp", out)
-        log(f"  [{WT.name} s{br.sp}] {strategy:22s} rep mrr={r.get('rep_mrr', float('nan')):.4f} "
-            f"top1={r.get('rep_top1', float('nan')):.4f}  S rep={r.get('s_rep_mrr', float('nan')):.4f}")
+        log(f"  [{WT.name} s{br.sp}] {strategy:22s} rep mrr={f4(r.get('rep_mrr'))} "
+            f"top1={f4(r.get('rep_top1'))}  S rep={f4(r.get('s_rep_mrr'))}")
 
     put("bridge", extra=br.check())
     old = {}
@@ -233,7 +432,10 @@ def run_baselines(br, old_rows, out):
     fails = []
     if br.pop == "all":
         fails += t_side_rows(br, old, put)
-    chk = RA.scorer_check(WS, ds_, br.rep_s)
+    if br.pop == "timp":        # no report genes in this world: check the scorer on the atlas
+        chk = RA.scorer_check(WS, {"act": ds_["act"], "rep": ds_["aux"]}, RA.Reporter(WS, ds_["aux"], ds_["act"]))
+    else:
+        chk = RA.scorer_check(WS, ds_, br.rep_s)
     # The fast scorer takes GO Jaccards from the full K x K matrix, Reporter recomputes
     # them on the sub-matrix; float32 last bits differ, and among tied Jaccards that moves
     # which neighbour argpartition keeps. Measured 2026-11-23 inside K562 (the RPE1
@@ -256,15 +458,24 @@ def t_side_rows(br, old, put):
     WT, dt, B = br.WT, br.dep_t, RA.B_DEPLOY
     fails = []
     t0 = time.time()
+    # A split rl_acquire never ran (the held-out confirmation splits) has no old rows:
+    # its reconciliation is None, not a failure, and its floors are computed here.
     rnd = RA.random_dist(br.rep_t, dt["act"], B)
-    ok_r = "random" in old and abs(rnd["rep_mrr"] - old["random"]["rep_mrr"]) < 1e-12
-    put("random", extra=dict(rnd, reconciled=bool(ok_r), old=old.get("random", {}).get("rep_mrr")), t0=t0)
-    fails += [] if ok_r else ["random median"]
+    ok_r = (abs(rnd["rep_mrr"] - old["random"]["rep_mrr"]) < 1e-12) if "random" in old else None
+    put("random", extra=dict(rnd, reconciled=ok_r, old=old.get("random", {}).get("rep_mrr")), t0=t0)
+    fails += [] if ok_r is not False else ["random median"]
     t0 = time.time()
     ch_fac = RA.go_facility(WT, dt, B)
-    ok_f = "go_facility" in old and [int(x) for x in ch_fac] == old["go_facility"]["chosen"]
-    put("go_facility", ch_fac, extra={"reconciled": bool(ok_f)}, t0=t0)
-    fails += [] if ok_f else ["go_facility set"]
+    ok_f = ([int(x) for x in ch_fac] == old["go_facility"]["chosen"]) if "go_facility" in old else None
+    put("go_facility", ch_fac, extra={"reconciled": ok_f}, t0=t0)
+    fails += [] if ok_f is not False else ["go_facility set"]
+    for v in ("idf", "emb"):     # the other two static floors, same reconciliation rule
+        t0 = time.time()
+        ch = RA.facility(WT, dt, B, v)
+        k = f"go_facility_{v}"
+        ok = ([int(x) for x in ch] == old[k]["chosen"]) if k in old else None
+        put(k, ch, extra={"reconciled": ok}, t0=t0)
+        fails += [] if ok is not False else [k + " set"]
     T_all = np.concatenate([dt["act"], dt["aux"]])
     ok_h = facility_on(WT.JJ, dt["act"], T_all, B) == [int(x) for x in ch_fac]
     put("facility_helper_check", extra={"matches_go_facility": bool(ok_h)})
@@ -289,7 +500,21 @@ def s_side_rows(br, put, sfx):
     # ... and on S's GO view of the same genes, so "S's GO" is not confused with "S's signatures"
     t0 = time.time()
     ch = facility_on(WS.JJ, ds_["act"], T_s, B)
-    put("sim_go_facility" + sfx, br.to_t(ch), ch, t0=t0)
+    # under timp this IS T's GO facility over all candidates: a reconciliation point
+    ex = ({"matches_go_facility": ch == [int(x) for x in RA.go_facility(br.WT, br.dep_t, B)]}
+          if br.pop == "timp" else None)
+    put("sim_go_facility" + sfx, br.to_t(ch), ch, extra=ex, t0=t0)
+    if br.pop == "timp":
+        # DIAGNOSTIC ONLY (no method reads it): how close the imputed candidate signatures
+        # are to the real, hidden ones
+        WT, act = br.WT, ds_["act"]
+        real = RA.RH.unit(WT.Y[act][:, br.imp_cols])
+        cs = np.einsum("ij,ij->i", real, RA.RH.unit(WS.Y[act]))
+        fromS = br.t2s[act] >= 0
+        put("imputation_check" + sfx, extra={
+            "median_cos_imputed_vs_hidden_from_S": float(np.median(cs[fromS])) if fromS.any() else None,
+            "median_cos_imputed_vs_hidden_go_knn": float(np.median(cs[~fromS])) if (~fromS).any() else None,
+            "n_from_S": int(fromS.sum()), "n_go_knn": int((~fromS).sum())})
 
     # ---- the mechanism diagnostic: does the simulator rank sets the way T does?
     t0 = time.time()
@@ -303,6 +528,8 @@ def s_side_rows(br, put, sfx):
         so.append(d["s_own_mrr"])
 
     def spear(a, b):
+        if any(v is None for v in a) or any(v is None for v in b):
+            return None
         ra, rb = np.argsort(np.argsort(a)), np.argsort(np.argsort(b))
         return float(np.corrcoef(ra, rb)[0, 1])
     put("transfer_probe" + sfx, extra={"n": N_PROBE, "spearman_s_own_vs_t_rep": spear(so, tr),
@@ -347,6 +574,14 @@ def main():
     force = bool(os.environ.get("PJ_SIM_FORCE"))
     check = json.load(open(os.path.join(a.cache_dir, "cache_check.json")))
 
+    def readout(ds):
+        """(T readout genes, S readout genes) for the timp simulator, or None (gate)."""
+        ps = [os.path.join(a.cache_dir, f"readout_{n}.npz") for n in (ds, RA.OTHER[ds])]
+        if not all(os.path.exists(x) for x in ps):
+            print(f"GATE NOT MET: {ps} missing -- run ./submit.sh sim_readout first")
+            return None
+        return tuple([str(g) for g in np.load(x)["genes"]] for x in ps)
+
     def world(name):
         info = check["datasets"].get(name)
         if not info or not info.get("ok"):
@@ -362,15 +597,18 @@ def main():
                 log(f"sim baselines already complete, skipping: {out}")
                 return 0
         old_p = os.path.join(a.cache_dir, "baselines", f"{ds}__s{sp}.jsonl")
-        if not os.path.exists(old_p):
-            print(f"GATE NOT MET: {old_p} missing -- the reconciliation point does not exist")
-            return 0
-        old_rows = [json.loads(x) for x in open(old_p) if x.strip()]
+        # absent for splits rl_acquire never ran (held-out confirmation): no reconciliation
+        old_rows = [json.loads(x) for x in open(old_p) if x.strip()] if os.path.exists(old_p) else []
+        if not old_rows:
+            log(f"no rl_acquire baselines for {ds} split {sp}: floors computed here, not reconciled")
         WT, WS = world(ds), world(RA.OTHER[ds])
         if WT is None or WS is None:
             return 0
+        ro = readout(ds) if pop == "timp" else None
+        if pop == "timp" and ro is None:
+            return 0
         log(f"sim baselines: {ds} (source {WS.name}) split {sp} pop {pop} -> {out}")
-        run_baselines(Bridge(WT, WS, sp, pop), old_rows, out)
+        run_baselines(Bridge(WT, WS, sp, pop, ro), old_rows, out)
         return 0
 
     ds, sp, me, seed = train_grid[a.task_index]
@@ -385,7 +623,10 @@ def main():
         return 0
     bm, pop = split_pop(me)
     sfx = "" if pop == "all" else "_" + pop
-    br = Bridge(WT, WS, sp, pop)
+    ro = readout(ds) if pop == "timp" else None
+    if pop == "timp" and ro is None:
+        return 0
+    br = Bridge(WT, WS, sp, pop, ro)
     WS = br.WS                # the simulator: S itself, or S's signatures under T's GO (tpred)
     info = br.check()
     log(f"train {tag}: {info} cfg={RA.CFG}")
@@ -400,6 +641,16 @@ def main():
         elif bm == "sim_ppo_peek":
             r = RA.train_ppo(WS, br.dep_s, "peek", seed, a.threads, curve, rep_fn=br.report_t)
             outs = [(me, r)]
+        elif bm == "sim_pg_combo":
+            rw = ComboReward(br)
+            r = train_pg_reward(WS, br.dep_s, seed, rw, curve, br.report_t)
+            r["combo"] = rw.info()
+            outs = [(me, r)]
+        elif bm == "sim_greedy_combo":    # the non-RL optimiser of the identical reward; a run is one draw
+            rw = ComboReward(br)
+            ch = RA.greedy(WS, rw, br.dep_s["act"], RA.B_DEPLOY, np.random.default_rng(9201 + 1000 * seed))
+            outs = [(me, {"chosen": ch, "rep": br.report_t(ch), "own_reward": float(rw.mrr(ch)),
+                          "combo": rw.info()})]
         elif bm == "sim_critic":
             r = RA.train_critic(WS, br.dep_s, seed, a.threads, curve, rep_fn=br.report_t)
             outs = [("sim_critic_only" + sfx, dict(r["critic_only"], diag=r["diag"])),
@@ -420,8 +671,8 @@ def main():
         res = [dict(base, method=me, error=f"{type(e).__name__}: {e}")]
     for x in res:
         x["secs"] = round(time.time() - t0, 1)
-        log(f"RESULT {x['method']:18s} T rep mrr={x.get('rep_mrr', float('nan')):.4f} "
-            f"top1={x.get('rep_top1', float('nan')):.4f}  S rep={x.get('s_rep_mrr', float('nan')):.4f}")
+        log(f"RESULT {x['method']:18s} T rep mrr={f4(x.get('rep_mrr'))} "
+            f"top1={f4(x.get('rep_top1'))}  S rep={f4(x.get('s_rep_mrr'))}")
     if any("error" in x for x in res):
         with open(os.path.join(od, "runs", tag + ".error.json"), "w") as f:
             json.dump(res, f)
