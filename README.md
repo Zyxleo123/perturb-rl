@@ -45,6 +45,7 @@ python3 scripts/repr_splice.py   # then regenerate GAPS.md's generated repr bloc
 ./submit.sh recon        # re-check a per-gene reconciliation failure (diagnostic; writes nothing)
 ./submit.sh sim          # sim-to-real acquisition: RL trained inside the other cell line, deployed here; baselines + runs -> report (CPU)
 ./submit.sh sim_report   # redraw the sim table from saved runs (cheap)
+python3 scripts/sim_splice.py    # then regenerate GAPS.md's sim-to-real section + summary paragraph from the reports (login node, no compute)
 squeue -u $USER -o '%.8i %.9P %.16j %.8T %.10M %R'
 ```
 

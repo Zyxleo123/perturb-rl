@@ -83,6 +83,21 @@ RPE1, 2.4% → 4.0% on K562). That is gap 0's unseen-*context* axis doing the wo
 is the same conclusion again: measurement has value, annotation does not. See "The
 unseen-gene gap is a combiner problem" below and fig22.
 
+<!-- sim-summary: begin -->
+**RL trained inside another cell line's screen beats prior knowledge on the genes that screen covers, but not overall (added 2026-11-23).** When one line is already screened, its measurements can
+serve as a simulator for choosing the next line's 100 genes, with no target-line signature
+read. Read only on held-out splits that chose nothing (15 splits), REINFORCE on the simulator beats greedy on the identical reward for K562 (+0.0210 (15/15, p 5.1e-06)), is ahead of, without clearing the bar against, greedy on the identical reward for RPE1 (+0.0055 (11/15, p 0.0062)).
+Combining the simulator with the target's GO facility objective in one reward (weight fixed
+in advance), REINFORCE ties the best prior floor over all candidates for K562 (+0.0002 (9/15, p 0.98)) and beats GO facility over the candidates the other line measured (+0.0145 (13/15, p 0.0049)); ties the best prior floor over all candidates for RPE1 (+0.0027 (9/15, p 0.36)) and beats GO facility over the candidates the other line measured (+0.0070 (12/15, p 0.01)).
+The difference between the two columns is the candidates the source line never screened, which
+no simulator can offer: restricting GO facility itself to the covered ones costs K562 -0.0144 against RL's +0.0145 within them; RPE1 -0.0042 against RL's +0.0070 within them.
+A hybrid that offers every candidate, pre-registered and run on a fresh set, does not clear it on either line.
+So the result refines the separation rather than overturning it: *another line's measurement
+lets RL out-choose prior knowledge among the genes it measured, but over all candidates the net
+is not distinguishable from the prior floor.* As an optimiser, RL is ahead of greedy on the
+identical reward at p < 0.05 in 3 of 4 (line, reward) pairs. See "Sim-to-real" below.
+<!-- sim-summary: end -->
+
 The reward oracle, not the generator, is what limits this project. On Norman, a
 parameter-free nearest-centroid match recovers the correct perturbation **86.6%** of the
 time from a 128-cell target, while ranking the same 230 candidates by GEARS-predicted
@@ -1106,6 +1121,131 @@ gram} → figs, all CPU, ~1.5 h) → `artifacts/repr_{probe,predict,select,curve
 fig22, then `python3 scripts/repr_splice.py` regenerates this section's generated block.
 Individual stages: `reprprobe`, `reprpred`, `reprsel`, `reprcurve`, `reprcalib`,
 `reprgram`, `reprfigs`; `recon` re-checks a per-gene reconciliation failure.
+
+---
+
+<!-- sim-generated: begin -->
+## Sim-to-real: RL trained inside another cell line's screen
+
+**Added 2026-11-23.** Every blind acquisition method, ours and published, ties GO facility
+location, and the one input that ever moved the unseen-gene metric was another cell line's
+*measurement* ("The unseen-gene gap is a combiner problem"). So: when one line has been
+screened and 100 of 437 genes must be chosen in a new line, can RL use the existing screen
+as a **simulator** and choose better than prior knowledge does? That is the realistic way a
+screen in a new cell line gets planned: one in another line usually exists already.
+
+The deployment task is unchanged number for number: the same splits, GO-kNN built from the
+chosen genes' real signatures in the target line, retrieval MRR on the target's report
+genes, the same random-median denominator. No target-line signature of a candidate is read,
+and the source line's rows of the target's report genes are excluded from training, reward
+and validation alike. The RL methods are the peek-regime ones (REINFORCE on per-gene logits,
+critic-shrunk greedy, PPO), run **inside the source line** on the deployment candidates; the
+chosen set maps back and is scored in the target by `rl_acquire.Reporter`. Every chosen set
+is re-scored in the analysis env; on the development splits the random medians and GO facility
+means reproduce `rl_report`'s to max |Δ| = 6e-17 over 8 checks
+(the held-out splits are new, so they have nothing to reconcile with).
+
+### What survives held-out splits
+
+The ideas below were developed on splits 4/104/204, so every claim is re-tested, unchanged,
+on splits nothing was tuned on (15 splits across up to three fresh sets, 3 seeds
+each). Statistics are **per split** (seeds averaged first), paired against the reference on
+the same split.
+
+| held-out, per split | K562: vs best prior floor | K562: vs GO facility, same candidates | K562: vs greedy, same reward | RPE1: vs best prior floor | RPE1: vs GO facility, same candidates | RPE1: vs greedy, same reward |
+|---|---|---|---|---|---|---|
+| REINFORCE in the source line | -0.0050 (7/15, p 0.34) | +0.0094 (9/15, p 0.063) | +0.0210 (15/15, p 5.1e-06) | -0.0006 (8/15, p 0.86) | +0.0037 (9/15, p 0.23) | +0.0055 (11/15, p 0.0062) |
+| REINFORCE, simulator + T's GO facility | +0.0002 (9/15, p 0.98) | +0.0145 (13/15, p 0.0049) | +0.0115 (10/15, p 0.038) | +0.0027 (9/15, p 0.36) | +0.0070 (12/15, p 0.01) | +0.0043 (12/15, p 0.065) |
+| REINFORCE, simulator + GO facility, all candidates | +0.0052 (3/5, p 0.5) | +0.0122 (5/5, p 0.083) | +0.0322 (5/5, p 0.052) | +0.0021 (3/5, p 0.78) | +0.0069 (4/5, p 0.42) | +0.0100 (5/5, p 0.024) |
+
+Cells: mean MRR difference (splits won / splits, two-sided p of a split-level paired t). A
+verdict of *beats* needs p < 0.05 **and** at least 3/4 of splits won — a bar set before the last
+held-out set was run, and kept. "Best prior floor" is the
+strongest of the three static GO facility views on that split, over all 437 candidates — the
+floor every blind method in this file has had to clear.
+
+- **K562**, simulated in RPE1's screen. The pre-registered combined-reward REINFORCE ties the best prior floor over all candidates (+0.0002 (9/15, p 0.98)), beats GO facility over the candidates RPE1 measured (+0.0145 (13/15, p 0.0049)), and is ahead of, without clearing the bar against, greedy on the identical combined reward (+0.0115 (10/15, p 0.038)). Plain REINFORCE on the simulator alone beats greedy on its identical reward (+0.0210 (15/15, p 5.1e-06)) and ties the floor (-0.0050 (7/15, p 0.34)).
+- **RPE1**, simulated in K562's screen. The pre-registered combined-reward REINFORCE ties the best prior floor over all candidates (+0.0027 (9/15, p 0.36)), beats GO facility over the candidates K562 measured (+0.0070 (12/15, p 0.01)), and ties greedy on the identical combined reward (+0.0043 (12/15, p 0.065)). Plain REINFORCE on the simulator alone is ahead of, without clearing the bar against, greedy on its identical reward (+0.0055 (11/15, p 0.0062)) and ties the floor (-0.0006 (8/15, p 0.86)).
+
+**Offering every candidate (the hybrid).** On K562 the simulator can only offer the genes
+RPE1 also screened. The combined reward over *all* 437 candidates — the simulator scores the
+chosen genes it measured, GO facility scores every chosen gene — was introduced after held-out
+set A; its first version had a bug (see caveats), and the fixed version ran only on set C: K562 ties the floor (+0.0052 (3/5, p 0.5)); RPE1 ties the floor (+0.0021 (3/5, p 0.78)).
+
+### Why it has this shape
+
+- **The simulator is a noisy judge of a gene set.** Over 100 random sets, the Spearman between a
+  set's simulator score and its score in the target is K562 (simulated in RPE1) +0.19 to +0.25 on the simulator's own reward genes and +0.28 to +0.47 on RPE1's rows of the report genes themselves; RPE1 (simulated in K562) +0.03 to +0.32 on the simulator's own reward genes and +0.39 to +0.42 on K562's rows of the report genes themselves. The second
+  number is a ceiling no method uses: even a perfect simulator reward over the right genes ranks
+  sets only moderately, because the same gene acts differently in the other line.
+- **It finds a different set, not a better copy of the same one.** REINFORCE in the simulator
+  shares K562 22–30 of 100 with GO facility's set (chance 22) and 30–42 with the peek REINFORCE set, which saw the real signatures (chance 22); RPE1 31–34 of 100 with GO facility's set (chance 24) and 43–51 with the peek REINFORCE set, which saw the real signatures (chance 29). The simulator knows which genes have
+  informative signatures; GO facility knows what the target's GO-kNN needs for coverage. That
+  complementarity is why the combined reward was tried.
+- **The candidates the simulator cannot offer.** A gene the source line never screened cannot
+  be simulated. Restricting GO facility itself to the covered candidates costs, against the
+  floor on the held-out splits, K562 (78% of candidates covered) -0.0144 (2/15, p 0.0045); RPE1 (53% of candidates covered) -0.0042 (5/15, p 0.084). Every simulator method pays that
+  before it starts, which is the gap between its same-candidates and all-candidates columns.
+
+### The development runs: four simulators
+
+Splits 4/104/204, 3 seeds; Δ is per split against the best prior floor (splits won of 3).
+`S` rewards on every source-line gene outside the candidates and report genes; `S on T's genes`
+only on the source rows of the target's measured atlas; `+ T's GO` also uses the target's GO
+Jaccard inside the simulator; `T atlas + imputed` is the target's own peek world with each
+candidate's hidden signature imputed (re-centred source signature on the 2,383 shared readout
+genes, or GO-kNN when the source never measured it).
+
+| simulator | method | K562 × random | K562 Δ vs floor | RPE1 × random | RPE1 Δ vs floor |
+|---|---|---:|---|---:|---|
+| S | greedy, same reward | 1.09× | -0.0282 (1/3) | 1.35× | +0.0007 (1/3) |
+| S | REINFORCE | 1.25× | -0.0006 (1/3) | 1.45× | +0.0111 (1/3) |
+| S | critic-shrunk greedy | 1.19× | -0.0107 (0/3) | 1.39× | +0.0045 (1/3) |
+| S | PPO | 1.20× | -0.0082 (1/3) | 1.44× | +0.0097 (2/3) |
+| S | REINFORCE, + T's GO facility | 1.28× | +0.0060 (2/3) | 1.44× | +0.0096 (1/3) |
+| S on T's genes | greedy, same reward | 1.08× | -0.0291 (0/3) | 1.36× | +0.0013 (2/3) |
+| S on T's genes | REINFORCE | 1.16× | -0.0156 (1/3) | 1.41× | +0.0070 (2/3) |
+| S on T's genes | critic-shrunk greedy | 1.15× | -0.0172 (1/3) | 1.40× | +0.0054 (2/3) |
+| S on T's genes | PPO | 1.18× | -0.0113 (0/3) | 1.42× | +0.0074 (2/3) |
+| S on T's genes | REINFORCE, + T's GO facility | 1.23× | -0.0031 (2/3) | 1.45× | +0.0110 (2/3) |
+| S on T's genes + T's GO | greedy, same reward | 1.14× | -0.0200 (1/3) | 1.33× | -0.0017 (1/3) |
+| S on T's genes + T's GO | REINFORCE | 1.17× | -0.0143 (1/3) | 1.36× | +0.0020 (2/3) |
+| S on T's genes + T's GO | critic-shrunk greedy | 1.17× | -0.0134 (1/3) | 1.47× | +0.0127 (2/3) |
+| S on T's genes + T's GO | PPO | 1.18× | -0.0118 (1/3) | 1.48× | +0.0138 (2/3) |
+| S on T's genes + T's GO | REINFORCE, + T's GO facility | 1.23× | -0.0029 (1/3) | 1.48× | +0.0136 (2/3) |
+| T atlas + imputed | greedy, same reward | 1.13× | -0.0202 (0/3) | 0.99× | -0.0363 (0/3) |
+| T atlas + imputed | REINFORCE | 1.06× | -0.0332 (0/3) | 1.04× | -0.0311 (0/3) |
+| T atlas + imputed | critic-shrunk greedy | 1.22× | -0.0053 (0/3) | 1.32× | -0.0021 (1/3) |
+| T atlas + imputed | PPO | 1.11× | -0.0244 (0/3) | 1.16× | -0.0180 (0/3) |
+| T atlas + imputed | REINFORCE, + T's GO facility | 1.25× | +0.0002 (2/3) | 1.16× | -0.0184 (0/3) |
+
+References on the same splits, best prior floor / peek REINFORCE (which sees the real
+signatures): K562 1.25× / 1.35×; RPE1 1.34× / 1.59×.
+
+### Caveats
+
+- **Many variants were tried before the held-out runs**: four simulators × five RL methods on
+  the development splits, then the combined reward, then the hybrid. A development-split win
+  means little in that situation, so every claim above is read on splits that chose nothing.
+  K562, combined reward vs floor: development +0.0060 (2/3, p 0.6), held-out set A -0.0130 (2/5, p 0.39).
+  RPE1, combined reward vs floor: development +0.0096 (1/3, p 0.6), held-out set A +0.0067 (4/5, p 0.11).
+- The combined reward's weight (1, in standardised units) was fixed before any run and never
+  tuned. The hybrid's first version had a bug — a set with no source-measured gene scored the
+  random-set mean, so greedy chose none of them on every split — and is excluded (its runs stay
+  on disk); the fixed version scores an empty reference set at chance and ran only on fresh splits.
+- Effects are small next to measuring: the combined reward's held-out gain over the floor is
+  K562 +0.0002, RPE1 +0.0027 MRR, against K562 +0.0189, RPE1 +0.0248 for peek REINFORCE, which reads the real
+  signatures. The simulator recovers a fraction of what measurement is worth.
+- One predictor (GO-kNN), one budget (100 of 437), two lines that are each other's only
+  source; `T atlas + imputed` uses the 2383 readout genes both
+  caches share, recovered and verified by `scripts/rl_readout.py`.
+
+Reproduce with `./submit.sh sim` (development grid, all CPU), the held-out sets with
+`PJ_RLA_SPLITS="..." ./submit.sh sim_base` / `sim_runs` and `62_sim_report` with
+`PJ_SIM_REPORT_SPLITS` / `PJ_SIM_REPORT_TAG`; `_timp` needs `./submit.sh sim_readout` first.
+Outputs: `artifacts/rl_acquire/sim/{report,summary}{,_confirm,_confirm2,_confirm3}.*`; this
+section is regenerated by `python3 scripts/sim_splice.py`.
+<!-- sim-generated: end -->
 
 ---
 

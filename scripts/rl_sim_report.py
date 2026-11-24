@@ -32,7 +32,9 @@ OLD_BASE = ["go_facility", "go_facility_idf", "go_facility_emb", "greedy_aux_all
 OLD_RUNS = ["pg_tab", "critic_shrink", "ppo_peek", "ppo_blind"]
 _SB = ["sim_go_facility", "sim_sig_facility", "sim_greedy_aux_all"]
 _SR = ["sim_pg_tab", "sim_pg_tab_boot", "sim_critic_only", "sim_critic_shrink", "sim_ppo_peek",
-       "sim_greedy_combo", "sim_pg_combo"]
+       "sim_greedy_combo", "sim_pg_combo", "sim_greedy_hybrid2", "sim_pg_hybrid2"]
+# sim_*_hybrid (v1) is superseded (an empty reference set scored the random-set mean; see
+# rl_sim.py) and deliberately absent from every table; its runs stay on disk.
 # two simulators (rl_sim.POPS): `all` source genes, and `_tpop` = the deployment's population
 SUFFIXES = ("_tpop", "_tpred", "_timp")
 SIM_BASE = ["go_facility_cov"] + _SB + [m + x for x in SUFFIXES for m in _SB]
@@ -56,6 +58,8 @@ LABEL = {
     "sim_ppo_peek": "PPO feature policy trained in S",
     "sim_greedy_combo": "greedy on simulator MRR + T's GO facility objective",
     "sim_pg_combo": "**REINFORCE on simulator MRR + T's GO facility objective**",
+    "sim_greedy_hybrid2": "greedy, combined reward over ALL candidates",
+    "sim_pg_hybrid2": "**REINFORCE, combined reward over ALL candidates**",
     "ppo_blind": "PPO blind (T's GO only)",
     "greedy_aux_all": "greedy on T's own signatures (peek)",
     "pg_tab": "REINFORCE on T's own signatures (peek)",
@@ -208,6 +212,7 @@ def main():
                           "sim_greedy_tpred": split_mean(ds, sp, "sim_greedy_aux_all_tpred"),
                           "sim_greedy_timp": split_mean(ds, sp, "sim_greedy_aux_all_timp"),
                           **{"greedy_combo" + x: split_mean(ds, sp, "sim_greedy_combo" + x) for x in ("",) + SUFFIXES},
+                          "greedy_hybrid2": split_mean(ds, sp, "sim_greedy_hybrid2"),
                           "sig_fac": split_mean(ds, sp, "sim_sig_facility"),
                           "sig_fac_tpop": split_mean(ds, sp, "sim_sig_facility_tpop"),
                           "sig_fac_tpred": split_mean(ds, sp, "sim_sig_facility_tpred"),
@@ -223,6 +228,8 @@ def main():
             kk = k + pop_of(x["method"]) if k in ("sim_greedy", "sig_fac") else k
             if k == "sim_greedy" and "_combo" in x["method"]:   # combo faces greedy on the SAME combined reward
                 kk = "greedy_combo" + pop_of(x["method"])
+            if k == "sim_greedy" and "_hybrid2" in x["method"]:
+                kk = "greedy_hybrid2"
             x[f"vs_{k}"] = x["mrr"] - R[kk]
         x["cheat_frac"] = (x["mrr"] - R["med"]) / (R["cheat"] - R["med"])
 
@@ -266,7 +273,8 @@ def main():
     reconc = [r for r in sim_base if r["strategy"] in ("random", "go_facility", "facility_helper_check",
                                                         "scorer_check_s", "done")]
     bridges = {f"{r['dataset']}__s{r['split']}__{r.get('pop', 'all')}": {
-        k: r[k] for k in ("act_covered", "rep_covered_excluded_from_S", "aux_s", "n_shared_genes")}
+        k: r.get(k) for k in ("act_covered", "rep_covered_excluded_from_S", "aux_s", "n_shared_genes",
+                              "atlas_median_cos_recentred")}   # timp bridges carry a different set
         for r in sim_base if r["strategy"] == "bridge"}
     expected = len(keys) * len(SIM_RL) * 3  # 3 seeds, both simulators
     have = sum(1 for x in recs if x["method"] in SIM_RL)

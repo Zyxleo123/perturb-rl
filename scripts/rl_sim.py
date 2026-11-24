@@ -66,7 +66,8 @@ import numpy as np  # noqa: E402
 
 import rl_acquire as RA  # noqa: E402
 
-BASE_METHODS = ("sim_pg_tab", "sim_pg_tab_boot", "sim_critic", "sim_ppo_peek", "sim_pg_combo", "sim_greedy_combo")
+BASE_METHODS = ("sim_pg_tab", "sim_pg_tab_boot", "sim_critic", "sim_ppo_peek", "sim_pg_combo", "sim_greedy_combo",
+                "sim_pg_hybrid", "sim_greedy_hybrid", "sim_pg_hybrid2", "sim_greedy_hybrid2")
 # Added 2026-11-23 after the first three simulators: REINFORCE in S picks sets as good as
 # GO facility location but nearly DISJOINT from it (22-34 of 100 shared, chance ~23), and
 # 1.5-2x closer than chance to the peek optimum. The two carry different information --
@@ -77,6 +78,18 @@ BASE_METHODS = ("sim_pg_tab", "sim_pg_tab_boot", "sim_critic", "sim_ppo_peek", "
 # sim_greedy_combo is the non-RL optimiser of the identical reward.
 COMBO_LAM = 1.0
 N_NORM = 256
+# Added after the held-out confirmation (splits 304-704): within the candidates the source
+# measured, RL beats GO facility on both lines, but on K562 offering ONLY those candidates
+# costs GO facility -0.029 MRR (t=-5.8; RPE1 -0.005), more than RL gains. `hybrid` offers
+# all candidates: the simulator scores the chosen genes it measured, T's GO facility
+# objective scores every chosen gene, same z-scoring and the same fixed weight.
+# Pre-registered and run only on splits nothing has seen (804-1204).
+# v1 (sim_*_hybrid) is SUPERSEDED: a chosen set with no covered gene scored the random-set
+# MEAN simulator MRR, while a set with a few covered genes scores far below it, so the
+# reward was maximised by choosing no covered gene at all (greedy did exactly that on
+# every split: 0 covered of 100). v2 (sim_*_hybrid2) scores an empty reference set at
+# chance -- what the GO-kNN predictor with nothing to average actually delivers. v1 runs
+# are kept on disk, excluded from every table; v2 runs only on fresh splits 1304-1704.
 # Two simulators, differing only in WHICH source genes the reward is computed on:
 #   all   every gene S measured outside the candidates and T's report genes (the first
 #         run). On K562 that is 1,065 RPE1 genes, 695 of which K562 never screened, so
@@ -328,6 +341,50 @@ class ComboReward:
     def info(self):
         return {"lam": self.lam, "mu_mrr": self.mu_m, "sd_mrr": self.sd_m, "mu_fl": self.mu_f, "sd_fl": self.sd_f,
                 "corr_mrr_fl_random_sets": self.norm_corr}
+
+
+class HybridReward(ComboReward):
+    """ComboReward over ALL of T's candidates (T indices): the simulator MRR is that of
+    the chosen genes S measured (an empty covered set scores the random-set mean), the GO
+    facility objective that of every chosen gene."""
+
+    def __init__(self, br, lam=COMBO_LAM, empty="mean"):
+        self.br, self.lam, self.empty = br, lam, empty      # empty: "mean" = v1 (bug), "chance" = v2
+        dt = br.dep_t
+        self.T = np.concatenate([dt["act"], dt["aux"]])
+        M = br.WT.JJ[self.T].astype(np.float64).copy()
+        M[np.arange(self.T.size), self.T] = 0.0
+        self.M = M
+        self.trow = np.full(br.WT.K, -1, np.int64)
+        self.trow[self.T] = np.arange(self.T.size)
+        A = dt["act"]
+        rng = np.random.default_rng(9500)
+        sets = [A[rng.choice(A.size, size=RA.B_DEPLOY, replace=False)] for _ in range(N_NORM)]
+        m = np.array([self._sim(c) for c in sets])
+        f = np.array([self.fl(c) for c in sets])
+        self.mu_m, self.sd_m = float(m.mean()), float(m.std() + 1e-12)
+        self.mu_f, self.sd_f = float(f.mean()), float(f.std() + 1e-12)
+        self.norm_corr = float(np.corrcoef(m, f)[0, 1])
+
+    def _sim(self, chosen_t):
+        s = self.br.t2s[np.asarray(chosen_t, np.int64)]
+        s = s[s >= 0]
+        if s.size:
+            return self.br.own_s.mrr(s)
+        if self.empty == "chance":
+            return self.br.own_s.chance_mrr
+        return getattr(self, "mu_m", self.br.own_s.chance_mrr)      # v1, superseded
+
+    def fl(self, chosen_t):        # chosen are T indices here
+        ct = np.asarray(chosen_t, np.int64)
+        best = self.M[:, ct].max(1)
+        r = self.trow[ct]
+        best[r[r >= 0]] = 0.0
+        return float(best.sum() / self.T.size)
+
+    def mrr(self, chosen_t):
+        c = np.asarray(chosen_t, np.int64)
+        return (self._sim(c) - self.mu_m) / self.sd_m + self.lam * (self.fl(c) - self.mu_f) / self.sd_f
 
 
 def train_pg_reward(W, dep, seed, reward, curve_path, rep_fn):
@@ -634,6 +691,7 @@ def main():
             "K_report": int(br.dep_t["rep"].size), "act_covered": info["act_covered"], "cfg": RA.CFG,
             "smoke": RA.SMOKE, "regime": "xline_sim", "pop": pop}
     t0 = time.time()
+    direct = []           # rows a branch builds itself (hybrid works in T indices)
     try:
         if bm in ("sim_pg_tab", "sim_pg_tab_boot"):
             r = RA.train_pg_tab(WS, br.dep_s, seed, bm == "sim_pg_tab_boot", curve, rep_fn=br.report_t)
@@ -651,13 +709,32 @@ def main():
             ch = RA.greedy(WS, rw, br.dep_s["act"], RA.B_DEPLOY, np.random.default_rng(9201 + 1000 * seed))
             outs = [(me, {"chosen": ch, "rep": br.report_t(ch), "own_reward": float(rw.mrr(ch)),
                           "combo": rw.info()})]
+        elif bm in ("sim_pg_hybrid", "sim_greedy_hybrid", "sim_pg_hybrid2", "sim_greedy_hybrid2"):
+            if pop != "all":
+                raise ValueError("hybrid is defined for the `all` simulator only")
+            rw = HybridReward(br, empty="chance" if bm.endswith("2") else "mean")
+            dep_h = {"act": br.dep_t["act"]}          # all of T's candidates, T indices
+            if bm.startswith("sim_pg_"):
+                r = train_pg_reward(WS, dep_h, seed, rw, curve, br.rep_t)
+            else:
+                ch = RA.greedy(WS, rw, dep_h["act"], RA.B_DEPLOY, np.random.default_rng(9201 + 1000 * seed))
+                r = {"chosen": ch, "rep": br.rep_t(ch), "own_reward": float(rw.mrr(ch))}
+            r["combo"] = rw.info()
+            ch_t = [int(c) for c in r.pop("chosen")]
+            rep = r.pop("rep")
+            cov = [c for c in ch_t if br.t2s[c] >= 0]
+            row = dict(base, method=me, **{f"rep_{k}": v for k, v in rep.items()}, **r)
+            row.update(chosen=ch_t, chosen_s=[int(br.t2s[c]) for c in cov], n_chosen_covered=len(cov),
+                       s_own_mrr=float(br.own_s.mrr(br.t2s[np.array(cov, np.int64)])) if cov else None,
+                       s_rep_mrr=None)
+            outs, direct = [], [row]
         elif bm == "sim_critic":
             r = RA.train_critic(WS, br.dep_s, seed, a.threads, curve, rep_fn=br.report_t)
             outs = [("sim_critic_only" + sfx, dict(r["critic_only"], diag=r["diag"])),
                     ("sim_critic_shrink" + sfx, dict(r["critic_shrink"], diag=r["diag"]))]
         else:
             raise ValueError(me)
-        res = []
+        res = list(direct)
         for name, r in outs:
             ch_s = [int(c) for c in r.pop("chosen")]
             rep = r.pop("rep")
