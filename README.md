@@ -43,6 +43,8 @@ PJ_REL_SMOKE=1 PJ_RLA_SPLITS=4 PJ_REL_SEEDS=0 ./submit.sh related_smoke   # ever
 ./submit.sh repr         # why the unseen-gene predictor fails: probe -> pred -> sel -> {curve, calib, gram} -> fig22 (CPU, ~1.5 h)
 python3 scripts/repr_splice.py   # then regenerate GAPS.md's generated repr block from those artifacts (login node, no compute)
 ./submit.sh recon        # re-check a per-gene reconciliation failure (diagnostic; writes nothing)
+./submit.sh sim          # sim-to-real acquisition: RL trained inside the other cell line, deployed here; baselines + runs -> report (CPU)
+./submit.sh sim_report   # redraw the sim table from saved runs (cheap)
 squeue -u $USER -o '%.8i %.9P %.16j %.8T %.10M %R'
 ```
 
@@ -157,6 +159,9 @@ GPU in this pool (sm_70 v100 → sm_90 h200).
 | `55_repr_calib` | cpu | calibration ablation: the oracle similarity raw vs standardised (same ordering, different magnitudes) |
 | `56_repr_gram` | cpu | estimate the combiner's inner products instead of plugging them in: neighbourhood x b 2x2, then a learned b |
 | `57_recon_check` | cpu | bisect a per-gene reconciliation failure and test whether it is a tie-boundary flip; writes nothing |
+| `60_sim_base` | cpu, array | sim-to-real baselines per (line, split, simulator): reconciliation with `41`'s random median and GO facility set, greedy on the simulator reward, facility on source signatures, transfer probe |
+| `61_sim_train` | cpu, array | REINFORCE / critic / PPO trained inside the other line's screen on the deployment candidates, three simulators (`all`, `_tpop`, `_tpred`) |
+| `62_sim_report` | cpu | re-score every chosen set in GAPS's env, paired tests vs the floors → `artifacts/rl_acquire/sim/{report.md,summary.json}` |
 | `30_figures` | cpu | aggregate figures, drawn from artifacts |
 | `31_case_studies` | cpu | named individual perturbations rather than metrics |
 | `33_generalization_figures` | cpu | redraw fig13-fig14 from `artifacts/generalization/` |
