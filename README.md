@@ -45,6 +45,7 @@ python3 scripts/repr_splice.py   # then regenerate GAPS.md's generated repr bloc
 ./submit.sh recon        # re-check a per-gene reconciliation failure (diagnostic; writes nothing)
 ./submit.sh sim          # sim-to-real acquisition: RL trained inside the other cell line, deployed here; baselines + runs -> report (CPU)
 ./submit.sh sim_report   # redraw the sim table from saved runs (cheap)
+./submit.sh sim_readout  # readout gene names behind the RL caches, verified (needed once, before the _timp simulator)
 python3 scripts/sim_splice.py    # then regenerate GAPS.md's sim-to-real section + summary paragraph from the reports (login node, no compute)
 squeue -u $USER -o '%.8i %.9P %.16j %.8T %.10M %R'
 ```
@@ -161,8 +162,9 @@ GPU in this pool (sm_70 v100 → sm_90 h200).
 | `56_repr_gram` | cpu | estimate the combiner's inner products instead of plugging them in: neighbourhood x b 2x2, then a learned b |
 | `57_recon_check` | cpu | bisect a per-gene reconciliation failure and test whether it is a tie-boundary flip; writes nothing |
 | `60_sim_base` | cpu, array | sim-to-real baselines per (line, split, simulator): reconciliation with `41`'s random median and GO facility set, greedy on the simulator reward, facility on source signatures, transfer probe |
-| `61_sim_train` | cpu, array | REINFORCE / critic / PPO trained inside the other line's screen on the deployment candidates, three simulators (`all`, `_tpop`, `_tpred`) |
-| `62_sim_report` | cpu | re-score every chosen set in GAPS's env, paired tests vs the floors → `artifacts/rl_acquire/sim/{report.md,summary.json}` |
+| `61_sim_train` | cpu, array | REINFORCE / critic / PPO trained inside the other line's screen on the deployment candidates; four simulators (`all`, `_tpop`, `_tpred`, `_timp`); combined reward (simulator + the target's GO facility objective) and its all-candidates hybrid, each with greedy on the identical reward |
+| `62_sim_report` | cpu | re-score every chosen set in GAPS's env, paired tests vs the floors → `artifacts/rl_acquire/sim/{report,summary}{,_confirm,_confirm2,_confirm3}.*` (`PJ_SIM_REPORT_SPLITS` / `PJ_SIM_REPORT_TAG` select the held-out sets) |
+| `63_sim_readout` | cpu | recover the readout gene names behind the caches' signature columns, verified against the cache (masked counts; signature rows recomputed from the h5ad) |
 | `30_figures` | cpu | aggregate figures, drawn from artifacts |
 | `31_case_studies` | cpu | named individual perturbations rather than metrics |
 | `33_generalization_figures` | cpu | redraw fig13-fig14 from `artifacts/generalization/` |
@@ -278,3 +280,14 @@ estimating the inner products the combiner reads -- handed the true ones, GO's o
 neighbourhood reaches 85% of the oracle on both lines. The one realistic input that moves
 it is a measurement: a gene unseen in this line but measured in the other is identifiable
 **1.7–2.9×** better than GO manages, on the genes the other line covers.
+
+**RL with the other line's screen as a simulator** (GAPS.md "Sim-to-real", `./submit.sh sim`).
+Choosing 100 of 437 genes to measure in one line, with no signature of a candidate read there,
+RL trained inside the other line's screen picks better genes than GO facility location *among
+the genes that screen covers*: K562 +0.0145 MRR (13/15 splits, p 0.005), RPE1 +0.0070 (12/15,
+p 0.01), read only on 15 held-out splits that chose nothing. It also out-optimises greedy on
+the identical simulator reward (K562 15/15 splits, p 5e-6; RPE1 11/15, p 0.006). Over all 437
+candidates it ties the best prior floor (p 0.98 / 0.36): genes the source line never screened
+cannot be simulated, and losing them costs about what RL gains. Two apparent floor wins found
+on development splits reversed on fresh ones; GAPS.md reports both. The section is generated
+from the reports by `python3 scripts/sim_splice.py`.
