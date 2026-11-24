@@ -86,6 +86,21 @@ state|https://github.com/ArcInstitute/state|main}"
 : "${PJ_RLA_FORCE:=}"      # 1 = redo tasks whose result file already exists
 export PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS PJ_RLA_PER_TASK PJ_RLA_MAXPAR PJ_RLA_SMOKE PJ_RLA_FORCE
 
+# ---------------------------------------------------------------- sim-to-real acquisition (jobs 60-62)
+# scripts/rl_sim.py: the peek RL methods trained inside the OTHER cell line's screen on
+# the deployment candidates, deployed in this line. Datasets, splits and seeds are the
+# RL grid's own (PJ_RLA_*), so every run pairs with the existing floors.
+# Two simulators (scripts/rl_sim.py POPS): `all` rewards on every source gene outside the
+# candidates and T's report genes; `_tpop` methods reward only on the source rows of T's
+# own measured atlas, i.e. the deployment's gene population; `_tpred` methods additionally
+# use T's GO Jaccard inside the simulator, so only the signatures come from the source.
+: "${PJ_SIM_METHODS:=sim_pg_tab sim_pg_tab_boot sim_critic sim_ppo_peek sim_pg_tab_tpop sim_pg_tab_boot_tpop sim_critic_tpop sim_ppo_peek_tpop sim_pg_tab_tpred sim_pg_tab_boot_tpred sim_critic_tpred sim_ppo_peek_tpred}"
+: "${PJ_SIM_POPS:=all tpop tpred}"   # which simulators the baselines array covers
+: "${PJ_SIM_PER_TASK:=12}"     # grid entries run in parallel in one array task
+: "${PJ_SIM_MAXPAR:=6}"
+: "${PJ_SIM_FORCE:=}"          # 1 = redo runs whose result file exists
+export PJ_SIM_METHODS PJ_SIM_POPS PJ_SIM_PER_TASK PJ_SIM_MAXPAR PJ_SIM_FORCE
+
 # ---------------------------------------------------------------- related work (jobs 14, 44-45)
 # Published acquisition methods re-run on the RL task's exact splits, predictor and
 # report genes (scripts/related_work.py). The datasets and splits are the RL grid's

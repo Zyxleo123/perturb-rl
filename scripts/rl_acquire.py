@@ -753,7 +753,7 @@ def seg_logp(torch, net, X, seg, nseg, act_rows):
 
 # ========================================================================= PPO
 def train_ppo(W, dep, regime, seed, n_threads, curve_path, train_world=None, pool=None,
-              na_target=None, rich=False):
+              na_target=None, rich=False, rep_fn=None):
     """Train on `train_world` (default: the deployment world W), deploy on W.
 
     Everything that selects -- the sub-problem sampler, the validation sub-problems,
@@ -776,7 +776,7 @@ def train_ppo(W, dep, regime, seed, n_threads, curve_path, train_world=None, poo
     # validation sub-problems: fixed across seeds, drawn the same way as training ones
     val = [sampler(np.random.default_rng(770_000 + i)) for i in range(C["n_val"])]
     val_rs = [RewardSet(WT, ep["rew"]) for ep in val]
-    rep_fn = Reporter(W, dep["rep"], dep["act"])
+    rep_fn = rep_fn or Reporter(W, dep["rep"], dep["act"])
     dep_ep = deploy_episode(dep)
     probe = sampler(np.random.default_rng(12345))      # a throwaway draw, to record the scale
     scale = {"train_dataset": WT.name, "pool": int(np.asarray(
@@ -892,7 +892,7 @@ def train_ppo(W, dep, regime, seed, n_threads, curve_path, train_world=None, poo
 
 
 # ================================================================ tabular PG
-def train_pg_tab(W, dep, seed, boot, curve_path):
+def train_pg_tab(W, dep, seed, boot, curve_path, rep_fn=None):
     """REINFORCE, leave-one-out baseline, Adam, on Plackett-Luce logits theta.
 
     log PL(a_1..a_B) = sum_t theta_{a_t} - log Z_t, Z_t = sum over still-available.
@@ -905,7 +905,7 @@ def train_pg_tab(W, dep, seed, boot, curve_path):
     theta = np.zeros(nA)
     m1, m2 = np.zeros(nA), np.zeros(nA)
     rs_full = RewardSet(W, aux)
-    rep_fn = Reporter(W, dep["rep"], act)
+    rep_fn = rep_fn or Reporter(W, dep["rep"], act)
     curve = []
     for it in range(1, C["pg_iters"] + 1):
         orders, R = [], []
@@ -948,7 +948,7 @@ def train_pg_tab(W, dep, seed, boot, curve_path):
 
 
 # ==================================================================== critic
-def train_critic(W, dep, seed, n_threads, curve_path):
+def train_critic(W, dep, seed, n_threads, curve_path, rep_fn=None):
     """Fitted Q at gamma = 0: regress the HELD-OUT one-step gain of adding a gene on
     its features, pooled over many re-split sub-problems. Then deploy (a) greedily on
     the critic alone -- no reward evaluated at deployment at all -- and (b) on a
@@ -1042,7 +1042,7 @@ def train_critic(W, dep, seed, n_threads, curve_path):
             "shrink_coef_critic": float(coef[0]), "shrink_coef_emp": float(coef[1])}
     log(f"  critic diag: {diag}")
     qfn = export_np(net)
-    rep_fn = Reporter(W, dep["rep"], dep["act"])
+    rep_fn = rep_fn or Reporter(W, dep["rep"], dep["act"])
     # (a) greedy on the critic alone
     ch_a = rollout(W, deploy_episode(dep), regime, qfn, np.random.default_rng(0), "greedy")[0]
     # (b) shrinkage greedy: every candidate's empirical gain on aux, blended with the critic
