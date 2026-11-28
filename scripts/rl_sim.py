@@ -625,7 +625,25 @@ def main():
         print(json.dumps({"n_train": len(train_grid), "n_baselines": len(base_grid),
                           "train": train_grid, "baselines": base_grid}))
         return 0
-    od = os.path.join(a.out_dir, "rl_acquire", "sim_smoke" if RA.SMOKE else "sim")
+    # PJ_SIM_SOURCE swaps the simulator for a screen built by src_cache.py (k562gw,
+    # lincs_<L>); its outputs live in their own directory so no original table mixes.
+    SRC = os.environ.get("PJ_SIM_SOURCE", "").strip()
+    sub = ("sim_smoke" if RA.SMOKE else "sim") + (f"__{SRC}" if SRC else "")
+    od = os.path.join(a.out_dir, "rl_acquire", sub)
+    src_check = {}
+    if SRC:
+        scp = os.path.join(a.cache_dir, "src", "src_check.json")
+        src_check = json.load(open(scp))["sources"] if os.path.exists(scp) else {}
+
+    def source_of(ds):
+        """The simulator line for target ds, or None when that pairing is not legal."""
+        if not SRC:
+            return RA.OTHER[ds]
+        if SRC == ds or ds not in src_check.get(SRC, {}).get("targets", {}):
+            print(f"GATE NOT MET: source {SRC} does not serve target {ds} "
+                  f"(same line, or not in src_check.json)")
+            return None
+        return SRC
     for sub in ("runs", "baselines"):
         os.makedirs(os.path.join(od, sub), exist_ok=True)
     force = bool(os.environ.get("PJ_SIM_FORCE"))
@@ -633,6 +651,9 @@ def main():
 
     def readout(ds):
         """(T readout genes, S readout genes) for the timp simulator, or None (gate)."""
+        if SRC:
+            print("GATE NOT MET: the timp simulator is defined for the Replogle pair only")
+            return None
         ps = [os.path.join(a.cache_dir, f"readout_{n}.npz") for n in (ds, RA.OTHER[ds])]
         if not all(os.path.exists(x) for x in ps):
             print(f"GATE NOT MET: {ps} missing -- run ./submit.sh sim_readout first")
@@ -640,6 +661,10 @@ def main():
         return tuple([str(g) for g in np.load(x)["genes"]] for x in ps)
 
     def world(name):
+        if name is None:
+            return None
+        if name in src_check:
+            return RA.World(src_check[name]["path"])
         info = check["datasets"].get(name)
         if not info or not info.get("ok"):
             print(f"GATE NOT MET: cache for {name} missing or did not reproduce GAPS's random median: {info}")
@@ -658,7 +683,7 @@ def main():
         old_rows = [json.loads(x) for x in open(old_p) if x.strip()] if os.path.exists(old_p) else []
         if not old_rows:
             log(f"no rl_acquire baselines for {ds} split {sp}: floors computed here, not reconciled")
-        WT, WS = world(ds), world(RA.OTHER[ds])
+        WT, WS = world(ds), world(source_of(ds))
         if WT is None or WS is None:
             return 0
         ro = readout(ds) if pop == "timp" else None
@@ -675,7 +700,7 @@ def main():
     if os.path.exists(out) and not force:
         log(f"already done, skipping (PJ_SIM_FORCE=1 to redo): {out}")
         return 0
-    WT, WS = world(ds), world(RA.OTHER[ds])
+    WT, WS = world(ds), world(source_of(ds))
     if WT is None or WS is None:
         return 0
     bm, pop = split_pop(me)

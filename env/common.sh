@@ -58,6 +58,9 @@
 # PDGrapher (Nature BME 2025) processed data, Zenodo
 : "${ZENODO_PDG_GENETIC:=15375990}"         # splits.tar.gz + torch_data_genetic.tar.gz (21.7 GB)
 : "${ZENODO_PDG_CHEMICAL:=15390483}"        # torch_data_chemical.tar.gz (37.3 GB)
+# Replogle 2022 genome-wide K562 normalised pseudobulk (figshare article 20029387), a
+# sim-to-real source for the RPE1 target (scripts/src_cache.py)
+: "${PJ_GW_BULK_URL:=https://ndownloader.figshare.com/files/35773217}"
 : "${FETCH_PDG_CHEMICAL:=0}"                # off by default: our project is genetic
 
 # Baseline code repos: "name|url|ref"
@@ -101,7 +104,11 @@ export PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS PJ_RLA_PER_TASK
 : "${PJ_SIM_PER_TASK:=12}"     # grid entries run in parallel in one array task
 : "${PJ_SIM_MAXPAR:=6}"
 : "${PJ_SIM_FORCE:=}"          # 1 = redo runs whose result file exists
-export PJ_SIM_METHODS PJ_SIM_POPS PJ_SIM_PER_TASK PJ_SIM_MAXPAR PJ_SIM_FORCE
+# Which screen is the simulator. Empty = the other Replogle line (RA.OTHER), the original
+# runs. A name built by ./submit.sh src (k562gw, lincs_<L>, see src_check.json) swaps it,
+# and every output then goes to rl_acquire/sim__<name>/ so the original tables never mix.
+: "${PJ_SIM_SOURCE:=}"
+export PJ_SIM_METHODS PJ_SIM_POPS PJ_SIM_PER_TASK PJ_SIM_MAXPAR PJ_SIM_FORCE PJ_SIM_SOURCE
 
 # ---------------------------------------------------------------- related work (jobs 14, 44-45)
 # Published acquisition methods re-run on the RL task's exact splits, predictor and
@@ -214,5 +221,5 @@ pj_gate_fail() {
   exit 0
 }
 
-export PJ_HOME PJ_SCRATCH PJ_CODE PJ_DATA PJ_WEIGHTS PJ_ARTIFACTS PJ_FIGURES \
+export PJ_GW_BULK_URL PJ_HOME PJ_SCRATCH PJ_CODE PJ_DATA PJ_WEIGHTS PJ_ARTIFACTS PJ_FIGURES \
        PJ_LOGS PJ_ENVFILES PJ_PY_ANALYSIS PJ_PY_TORCH PJ_UV

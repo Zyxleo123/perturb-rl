@@ -41,6 +41,8 @@
 #   PJ_RLA_SMOKE=1 PJ_RLA_SPLITS=4 PJ_RLA_SEEDS=0 ./submit.sh sim_smoke   # runs only, 3 iterations
 #   ./submit.sh sim_runs             # training array only (no report)
 #   ./submit.sh sim_report           # redraw the sim table from saved runs (cheap)
+#   ./submit.sh src                  # extra simulator sources (genome-wide K562, 10 LINCS lines) -> caches + probe
+#   PJ_SIM_SOURCE=k562gw PJ_RLA_DATASETS=replogle_rpe1_essential ./submit.sh sim   # sim-to-real with that source -> rl_acquire/sim__k562gw/
 #   ./submit.sh sim_readout          # readout gene names behind the caches, verified (needed by the _timp simulator)
 #   FETCH_PDG_CHEMICAL=1 ./submit.sh # also pull the 37 GB chemical tarball
 set -euo pipefail
@@ -76,7 +78,7 @@ for v in PJ_REPR_KNN PJ_RLA_DATASETS PJ_RLA_SPLITS PJ_RLA_METHODS PJ_RLA_SEEDS P
          PJ_RLA_PG_ITERS PJ_RLA_CRITIC_UNIV PJ_RLA_CRITIC_EPOCHS \
          PJ_REL_METHODS PJ_REL_SEEDS PJ_REL_PER_TASK PJ_REL_MAXPAR PJ_REL_NEVAL PJ_REL_SMOKE PJ_REL_FORCE \
          PJ_STORY_FORCE PJ_SIM_METHODS PJ_SIM_POPS PJ_SIM_PER_TASK PJ_SIM_MAXPAR PJ_SIM_FORCE \
-         PJ_SIM_REPORT_SPLITS PJ_SIM_REPORT_TAG; do
+         PJ_SIM_REPORT_SPLITS PJ_SIM_REPORT_TAG PJ_SIM_SOURCE PJ_SRC_FORCE; do
   if [ -n "${!v:-}" ]; then printf "export %s='%s'\n" "$v" "${!v}" >> "$ENVFILE"; fi
 done
 
@@ -392,6 +394,13 @@ if [ "$STAGE" = "sim_readout" ]; then
   # imputed-signature simulator, which puts one line's signature beside the other's)
   ID[readout]=$(sub "$J/63_sim_readout.sbatch")
   printf '  %-10s %s\n' readout "${ID[readout]}"
+fi
+
+if [ "$STAGE" = "src" ]; then
+  # extra sim-to-real sources: genome-wide K562 + 10 LINCS lines -> caches + feasibility probe
+  ID[srcbuild]=$(sub "$J/64_src_build.sbatch")
+  ID[srcasm]=$(sub "$J/65_src_assemble.sbatch" "--dependency=afterany:${ID[srcbuild]}")
+  printf '  %-10s %s\n' srcbuild "${ID[srcbuild]} (11 tasks)" srcasm "${ID[srcasm]}"
 fi
 
 if [ "$STAGE" = "sim_report" ]; then

@@ -92,7 +92,9 @@ def main():
     ap.add_argument("--art-dir", required=True)
     a = ap.parse_args()
     root = os.path.join(a.art_dir, "rl_acquire")
-    sim = os.path.join(root, "sim")
+    # PJ_SIM_SOURCE: the runs with a swapped simulator (src_cache.py) live in sim__<name>/
+    src = os.environ.get("PJ_SIM_SOURCE", "").strip()
+    sim = os.path.join(root, "sim" + (f"__{src}" if src else ""))
     check = json.load(open(os.path.join(root, "cache_check.json")))
 
     sim_base, runs, errors = [], [], []
