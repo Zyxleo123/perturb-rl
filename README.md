@@ -165,6 +165,9 @@ GPU in this pool (sm_70 v100 → sm_90 h200).
 | `61_sim_train` | cpu, array | REINFORCE / critic / PPO trained inside the other line's screen on the deployment candidates; four simulators (`all`, `_tpop`, `_tpred`, `_timp`); combined reward (simulator + the target's GO facility objective) and its all-candidates hybrid, each with greedy on the identical reward |
 | `62_sim_report` | cpu | re-score every chosen set in GAPS's env, paired tests vs the floors → `artifacts/rl_acquire/sim/{report,summary}{,_confirm,_confirm2,_confirm3}.*` (`PJ_SIM_REPORT_SPLITS` / `PJ_SIM_REPORT_TAG` select the held-out sets) |
 | `63_sim_readout` | cpu | recover the readout gene names behind the caches' signature columns, verified against the cache (masked counts; signature rows recomputed from the h5ad) |
+| `64_src_build` | cpu, array | extra simulator sources (`scripts/src_cache.py`): task 0 fetches Replogle 2022's genome-wide K562 pseudobulk → `raw_k562gw.npz`; tasks 1-10 one LINCS CRISPR line each from PDGrapher's data (safe `weights_only` load) |
+| `65_src_assemble` | cpu | every raw source → a drop-in `rl_acquire.World` cache + `artifacts/rl_acquire/src/src_check.json` (coverage of each target's candidates, signal ceiling, gene-pair agreement with the target, same-line sanity check). Use one with `PJ_SIM_SOURCE=<name>`; outputs then go to `rl_acquire/sim__<name>/` |
+| `66_opt_report` | cpu | REINFORCE vs simulated annealing (3 schedules) and greedy + swap at the same reward-evaluation budget, peek regime (`PJ_RLA_METHODS="sa sa_cold sa_hot greedy_swap"` on `42_rl_train`) → `artifacts/rl_acquire/opt/{report,summary}_s<first>-<last>.*` |
 | `30_figures` | cpu | aggregate figures, drawn from artifacts |
 | `31_case_studies` | cpu | named individual perturbations rather than metrics |
 | `33_generalization_figures` | cpu | redraw fig13-fig14 from `artifacts/generalization/` |
