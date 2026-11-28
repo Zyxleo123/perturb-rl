@@ -274,6 +274,45 @@ class RewardSet:
         return self.metrics(chosen)
 
 
+class WideReward:
+    """Peek-regime reward on MORE genes (added 2026-11-27, the RPE1 work): every visible
+    gene -- the aux atlas AND the candidates not chosen -- is a retrieval target, not only
+    aux. Candidate signatures are visible in peek (greedy reads them), so this uses no new
+    information. A chosen gene is dropped both as a query and as a retrieval candidate: its
+    GO-kNN prediction contains itself (Jaccard 1), so keeping it would be trivial, and at
+    deployment the report genes are disjoint from the chosen set anyway. Same predictor and
+    tie-aware MRR as RewardSet, on R = act U aux minus chosen."""
+
+    def __init__(self, W, act, aux):
+        self.W = W
+        self.R = np.sort(np.concatenate([np.asarray(act), np.asarray(aux)]))
+        self.rs = RewardSet(W, self.R)
+        self.pos = np.full(W.K, -1, np.int64)
+        self.pos[self.R] = np.arange(self.R.size)
+
+    def mrr(self, chosen):
+        rs = self.rs
+        c = np.asarray(chosen, np.int64)
+        S = rs.S(c)
+        drop = np.zeros(rs.n, bool)
+        drop[self.pos[c]] = True
+        keepq = ~drop[rs.o]
+        S = S[keepq][:, ~drop]
+        o_full = rs.o[keepq]
+        remap = -np.ones(rs.n, np.int64)
+        remap[~drop] = np.arange(int((~drop).sum()))
+        o = remap[o_full]
+        n = int((~drop).sum())
+        t = S[np.arange(S.shape[0]), o]
+        g = (S > t[:, None]).sum(1)
+        e = (S == t[:, None]).sum(1) - 1
+        H = RH.harmonic(n)
+        per = (H[g + e + 1] - H[g]) / (e + 1)
+        cnt = np.bincount(o, minlength=n)
+        m = cnt > 0
+        return float((np.bincount(o, weights=per, minlength=n)[m] / cnt[m]).mean())
+
+
 class Reporter:
     """Final numbers through rl_headroom's own functions, so a reported number is
     the same measurement GAPS.md reports, not this file's fast re-implementation."""
@@ -753,8 +792,13 @@ def seg_logp(torch, net, X, seg, nseg, act_rows):
 
 # ========================================================================= PPO
 def train_ppo(W, dep, regime, seed, n_threads, curve_path, train_world=None, pool=None,
-              na_target=None, rich=False, rep_fn=None):
+              na_target=None, rich=False, rep_fn=None, extra_deploys=None):
     """Train on `train_world` (default: the deployment world W), deploy on W.
+
+    `extra_deploys` (added 2026-11-25): {name: (dep, rep_fn)} further deployment splits of
+    W on which the SELECTED policy is rolled out once at the end. With train_world set to
+    the other line, training and selection never touch W, so one trained policy is
+    deployed on many splits: amortisation, zero reward evaluations per deployment.
 
     Everything that selects -- the sub-problem sampler, the validation sub-problems,
     the checkpoint -- lives entirely in the training world. W is touched only to roll
@@ -882,17 +926,25 @@ def train_ppo(W, dep, regime, seed, n_threads, curve_path, train_world=None, poo
         if it % C["val_every"] == 0 or it == C["ppo_iters"]:
             checkpoint(it)
     last = curve[-1]
+    extra = {}
+    if extra_deploys:
+        net.load_state_dict(best["state"])
+        fn = export_np(net)
+        for name, (dep_x, rep_x) in extra_deploys.items():
+            ch = rollout(W, deploy_episode(dep_x), regime, fn, np.random.default_rng(0), "greedy", rich=rich)[0]
+            extra[name] = {"chosen": [int(c) for c in ch], "rep": rep_x(ch)}
+            log(f"  extra deploy {name}: rep mrr={extra[name]['rep']['mrr']:.4f}")
     np.savez(curve_path.replace(".curve.jsonl", ".policy.npz"),
              **{k: v.numpy() for k, v in best["state"].items()},
              features=np.array(feature_names(regime, rich)))
     return {"chosen": best["chosen"], "rep": best["rep"], "best_iter": best["iter"],
             "best_val": best["val"], "val_ref": val_ref, "last_rep_mrr": last["rep_mrr"],
             "last_val_mrr": last["val_mrr"], "features": feature_names(regime, rich),
-            "train_scale": scale}
+            "train_scale": scale, "extra": extra}
 
 
 # ================================================================ tabular PG
-def train_pg_tab(W, dep, seed, boot, curve_path, rep_fn=None):
+def train_pg_tab(W, dep, seed, boot, curve_path, rep_fn=None, baseline=True, ent_c=0.0, reward=None):
     """REINFORCE, leave-one-out baseline, Adam, on Plackett-Luce logits theta.
 
     log PL(a_1..a_B) = sum_t theta_{a_t} - log Z_t, Z_t = sum over still-available.
@@ -904,7 +956,12 @@ def train_pg_tab(W, dep, seed, boot, curve_path, rep_fn=None):
     nA, B = act.size, B_DEPLOY
     theta = np.zeros(nA)
     m1, m2 = np.zeros(nA), np.zeros(nA)
-    rs_full = RewardSet(W, aux)
+    # `reward` overrides the aux reward (WideReward); `ent_c` > 0 is maximum-entropy
+    # REINFORCE: the advantage is computed on R - beta * log pi(order), the soft-RL
+    # score-function estimator (E[grad log pi] = 0, so the extra term only adds the entropy
+    # gradient), with beta = ent_c * std(R) / std(log pi) re-set every batch so ent_c is a
+    # scale-free ratio of the two terms.
+    rs_full = reward if reward is not None else RewardSet(W, aux)
     rep_fn = rep_fn or Reporter(W, dep["rep"], act)
     curve = []
     for it in range(1, C["pg_iters"] + 1):
@@ -916,8 +973,15 @@ def train_pg_tab(W, dep, seed, boot, curve_path, rep_fn=None):
             R.append(rs.mrr(act[o]))
         R = np.array(R)
         n = R.size
-        adv = R - (R.sum() - R) / (n - 1)
         u = np.exp(theta - theta.max())
+        if ent_c > 0:
+            lp = np.array([float(theta[o].sum() - theta.max() * B
+                                 - np.log(u.sum() - np.concatenate([[0.0], np.cumsum(u[o])[:-1]])).sum())
+                           for o in orders])
+            beta = ent_c * R.std() / max(lp.std(), 1e-12)
+            R = R - beta * lp
+        # leave-one-out baseline; baseline=False is the ablation (raw reward as advantage)
+        adv = R - (R.sum() - R) / (n - 1) if baseline else R.copy()
         grad = np.zeros(nA)
         for o, a in zip(orders, adv):
             Z = u.sum() - np.concatenate([[0.0], np.cumsum(u[o])[:-1]])
@@ -944,7 +1008,163 @@ def train_pg_tab(W, dep, seed, boot, curve_path, rep_fn=None):
                 f"rep mrr={r['mrr']:.4f}")
     mode = act[np.argsort(-theta)[:B]]
     return {"chosen": [int(x) for x in mode], "rep": rep_fn(mode), "own_reward": rs_full.mrr(mode),
-            "boot": bool(boot)}
+            "boot": bool(boot), "baseline": bool(baseline), "ent_c": ent_c,
+            "reward": "aux" if reward is None else type(reward).__name__}
+
+
+# ==================================================================== classical optimisers
+# Added 2026-11-25. REINFORCE beats greedy on greedy's own reward, but greedy is a weak
+# optimiser of a non-submodular set objective; a grad-RL reader asks whether a classical
+# black-box optimiser given the SAME number of reward evaluations does as well. Both
+# below optimise exactly the reward train_pg_tab optimises (RewardSet on aux), with
+# exactly its evaluation budget (pg_iters x pg_samples = 19,200 at the defaults).
+# Their schedules are fixed here in advance, never tuned on any report gene.
+def _swap(sel, nA, rng):
+    """One swap move on a B-subset of range(nA): (position in sel, new member)."""
+    inside = np.zeros(nA, bool)
+    inside[sel] = True
+    out = np.flatnonzero(~inside)
+    return int(rng.integers(sel.size)), int(out[rng.integers(out.size)])
+
+
+SA_TSCALE = {"sa": 1.0, "sa_cold": 0.1, "sa_hot": 10.0}   # T0 multipliers; all three are run
+
+
+def anneal(W, dep, seed, curve_path, rep_fn=None, tscale=1.0):
+    """Simulated annealing over B-subsets with swap moves and Metropolis acceptance.
+    Start: a uniformly random subset. Temperature: geometric from T0 to T0/100, where
+    T0 is the median |change in reward| of 64 random swaps from the start (so that a
+    typical worsening move is accepted with probability ~e^-1 at first). Returns the
+    best subset seen."""
+    rng = np.random.default_rng(seed + 7000)
+    act, aux = dep["act"], dep["aux"]
+    nA, B = act.size, B_DEPLOY
+    rs = RewardSet(W, aux)
+    rep_fn = rep_fn or Reporter(W, dep["rep"], act)
+    n_eval = CFG["pg_iters"] * CFG["pg_samples"]
+    sel = rng.choice(nA, size=B, replace=False)
+    cur = rs.mrr(act[sel])
+    probe = []
+    for _ in range(64):
+        i, j = _swap(sel, nA, rng)
+        t = sel.copy()
+        t[i] = j
+        probe.append(abs(rs.mrr(act[t]) - cur))
+    T0 = max(float(np.median(probe)), 1e-9) * tscale
+    used = 64
+    best, best_sel = cur, sel.copy()
+    curve, acc = [], 0
+    steps = n_eval - used
+    for k in range(steps):
+        T = T0 * (0.01 ** (k / max(steps - 1, 1)))
+        i, j = _swap(sel, nA, rng)
+        t = sel.copy()
+        t[i] = j
+        r = rs.mrr(act[t])
+        if r >= cur or rng.random() < np.exp((r - cur) / T):
+            sel, cur = t, r
+            acc += 1
+            if cur > best:
+                best, best_sel = cur, sel.copy()
+        if (k + 1) % 2000 == 0 or k == steps - 1:
+            row = {"evals": used + k + 1, "T": T, "cur": cur, "best_own_reward": best, "accept_rate": acc / (k + 1)}
+            curve.append(row)
+            with open(curve_path, "w") as f:
+                for x in curve:
+                    f.write(json.dumps(x) + "\n")
+            log(f"  sa evals={row['evals']} T={T:.2e} cur={cur:.4f} best={best:.4f} acc={row['accept_rate']:.3f}")
+    ch = act[best_sel]
+    return {"chosen": [int(x) for x in ch], "rep": rep_fn(ch), "own_reward": float(best), "n_eval": n_eval,
+            "T0": T0, "tscale": tscale}
+
+
+CEM_ALPHA = {"cem": 0.1, "cem_slow": 0.03, "cem_fast": 0.3}   # smoothing rates; all three are run
+CEM_WIDE = {"cem_wide": 0.1, "cem_wide_slow": 0.03, "cem_wide_fast": 0.3}   # the same on WideReward
+# REINFORCE variants for the RPE1 work (2026-11-27): max-entropy ratio and/or the wide reward
+PG_VARIANTS = {"pg_ent01": {"ent": 0.1, "wide": False}, "pg_ent03": {"ent": 0.3, "wide": False},
+               "pg_ent10": {"ent": 1.0, "wide": False}, "pg_wide": {"ent": 0.0, "wide": True},
+               "pg_wide_ent03": {"ent": 0.3, "wide": True}}
+
+
+def cem(W, dep, seed, curve_path, rep_fn=None, alpha=0.1, elite_frac=0.2, reward=None):
+    """Cross-entropy method on the same sampling distribution REINFORCE uses: B-subsets
+    drawn by Gumbel top-B on logits log p, p the per-gene inclusion weights. Each
+    iteration draws pg_samples sets (the same 32), keeps the top elite_frac by reward, and
+    moves p toward the elites' inclusion frequencies with smoothing alpha. The same
+    pg_iters x pg_samples evaluations as train_pg_tab. Returns the better (on the
+    optimised reward) of the final mode and the best set ever sampled -- generous to CEM;
+    REINFORCE returns its mode only."""
+    rng = np.random.default_rng(seed + 9000)
+    act, aux = dep["act"], dep["aux"]
+    nA, B = act.size, B_DEPLOY
+    rs = reward if reward is not None else RewardSet(W, aux)
+    rep_fn = rep_fn or Reporter(W, dep["rep"], act)
+    p = np.full(nA, B / nA)
+    n_el = max(1, int(round(elite_frac * CFG["pg_samples"])))
+    best, best_o = -1.0, None
+    curve = []
+    for it in range(1, CFG["pg_iters"] + 1):
+        lg = np.log(p + 1e-9)
+        orders = [np.argsort(-(lg + rng.gumbel(size=nA)))[:B] for _ in range(CFG["pg_samples"])]
+        R = np.array([rs.mrr(act[o]) for o in orders])
+        k = int(np.argmax(R))
+        if R[k] > best:
+            best, best_o = float(R[k]), orders[k].copy()
+        f = np.zeros(nA)
+        for i in np.argsort(-R)[:n_el]:
+            f[orders[i]] += 1.0 / n_el
+        p = (1 - alpha) * p + alpha * f
+        if it % 50 == 0 or it == CFG["pg_iters"]:
+            mode = np.argsort(-p)[:B]
+            row = {"iter": it, "sample_reward_mean": float(R.mean()), "mode_own_reward": float(rs.mrr(act[mode])),
+                   "best_seen": best}
+            curve.append(row)
+            with open(curve_path, "w") as fh:
+                for x in curve:
+                    fh.write(json.dumps(x) + "\n")
+            log(f"  cem it={it} sample R={R.mean():.4f} mode={row['mode_own_reward']:.4f} best={best:.4f}")
+    mode = np.argsort(-p)[:B]
+    mo = float(rs.mrr(act[mode]))
+    ch = act[mode] if mo >= best else act[best_o]
+    return {"chosen": [int(x) for x in ch], "rep": rep_fn(ch), "own_reward": max(mo, best),
+            "mode_own_reward": mo, "best_seen_own_reward": best, "alpha": alpha,
+            "n_eval": CFG["pg_iters"] * CFG["pg_samples"]}
+
+
+def greedy_swap(W, dep, seed, curve_path, rep_fn=None):
+    """Greedy over every candidate (rl_acquire.greedy, n_cand=None), then first-
+    improvement swap local search for the same 19,200 extra evaluations: the standard
+    'greedy + local search' fix for a non-submodular objective. Greedy's own evaluations
+    (~B x |act|) come on top, so this baseline gets MORE evaluations than REINFORCE."""
+    rng = np.random.default_rng(seed + 8000)
+    act, aux = dep["act"], dep["aux"]
+    nA = act.size
+    rs = RewardSet(W, aux)
+    rep_fn = rep_fn or Reporter(W, dep["rep"], act)
+    g = greedy(W, rs, act, B_DEPLOY, np.random.default_rng(9201 + 1000 * seed))
+    pos = {int(a): i for i, a in enumerate(act)}
+    sel = np.array([pos[int(x)] for x in g], np.int64)
+    cur = g_own = rs.mrr(act[sel])
+    n_eval = CFG["pg_iters"] * CFG["pg_samples"]
+    curve, imp = [], 0
+    for k in range(n_eval):
+        i, j = _swap(sel, nA, rng)
+        t = sel.copy()
+        t[i] = j
+        r = rs.mrr(act[t])
+        if r > cur:
+            sel, cur = t, r
+            imp += 1
+        if (k + 1) % 2000 == 0 or k == n_eval - 1:
+            curve.append({"evals": k + 1, "own_reward": cur, "improvements": imp})
+            with open(curve_path, "w") as f:
+                for x in curve:
+                    f.write(json.dumps(x) + "\n")
+            log(f"  greedy+swap evals={k + 1} own={cur:.4f} (greedy {g_own:.4f}) improvements={imp}")
+    ch = act[sel]
+    return {"chosen": [int(x) for x in ch], "rep": rep_fn(ch), "own_reward": float(cur),
+            "greedy_own_reward": float(g_own), "greedy_rep": rep_fn(np.asarray(g)), "n_eval": n_eval,
+            "greedy_chosen": [int(x) for x in g]}
 
 
 # ==================================================================== critic
@@ -1135,8 +1355,8 @@ def main():
     base = {"dataset": ds, "split": sp, "seed": seed, "budget": B_DEPLOY, "K_report": int(dep["rep"].size),
             "cfg": CFG, "smoke": SMOKE}
     try:
-        if me in ("pg_tab", "pg_tab_boot"):
-            r = train_pg_tab(W, dep, seed, me == "pg_tab_boot", curve)
+        if me in ("pg_tab", "pg_tab_boot", "pg_tab_nobase"):
+            r = train_pg_tab(W, dep, seed, me == "pg_tab_boot", curve, baseline=me != "pg_tab_nobase")
             res = [dict(base, method=me, regime="peek", **{f"rep_{k}": v for k, v in r.pop("rep").items()}, **r)]
         elif me == "ppo_peek" or me in BLIND_VARIANTS:
             regime = "peek" if me == "ppo_peek" else "blind"
@@ -1156,6 +1376,54 @@ def main():
                     kw["na_target"] = int(dep["act"].size)
             r = train_ppo(W, dep, regime, seed, a.threads, curve, **kw)
             res = [dict(base, method=me, regime=regime, **{f"rep_{k}": v for k, v in r.pop("rep").items()}, **r)]
+        elif me == "pg_ceiling":
+            # Headroom diagnostic (2026-11-27, the RPE1 work): is the held-out plateau set by
+            # reward NOISE (too few reward genes) or by a transferable ceiling? The report
+            # genes are halved by a fixed draw. REINFORCE is trained twice with the same seed,
+            # on aux alone and on aux + half A, and both chosen sets are scored on half B only,
+            # which neither run saw. A diagnostic, never a method: half A is report genes.
+            rr = np.random.default_rng(31_000 + sp).permutation(dep["rep"])
+            rA, rB = np.sort(rr[: rr.size // 2]), np.sort(rr[rr.size // 2:])
+            repB = Reporter(W, rB, dep["act"])
+            res = []
+            for tag_, rew_genes in (("pg_ceil_aux", dep["aux"]), ("pg_ceil_aux_plus_halfA", np.sort(np.concatenate([dep["aux"], rA])))):
+                d2 = {"act": dep["act"], "aux": rew_genes, "rep": rB}
+                r = train_pg_tab(W, d2, seed, False, curve.replace(".curve", f".{tag_}.curve"), rep_fn=repB)
+                res.append(dict(base, method=tag_, regime="peek_diag", n_reward=int(rew_genes.size), n_halfB=int(rB.size),
+                                **{f"halfB_{k}": v_ for k, v_ in r.pop("rep").items()}, **r))
+        elif me in PG_VARIANTS:
+            v = PG_VARIANTS[me]
+            rw = WideReward(W, dep["act"], dep["aux"]) if v["wide"] else None
+            r = train_pg_tab(W, dep, seed, False, curve, ent_c=v["ent"], reward=rw)
+            res = [dict(base, method=me, regime="peek", **{f"rep_{k}": v_ for k, v_ in r.pop("rep").items()}, **r)]
+        elif me in CEM_ALPHA or me in CEM_WIDE:
+            wide = me in CEM_WIDE
+            rw = WideReward(W, dep["act"], dep["aux"]) if wide else None
+            r = cem(W, dep, seed, curve, alpha=(CEM_WIDE if wide else CEM_ALPHA)[me], reward=rw)
+            res = [dict(base, method=me, regime="peek", **{f"rep_{k}": v for k, v in r.pop("rep").items()}, **r)]
+        elif me == "ppo_peek_xline":
+            # Amortised: one PPO policy trained on the OTHER line's whole screen at deployment
+            # scale, selected on that line's validation sub-problems, then rolled out on every
+            # split in PJ_RLA_DEPLOY_SPLITS of this line with no reward evaluation here.
+            WO = world(OTHER[ds])
+            if WO is None:
+                return 0
+            dsp = env_list("PJ_RLA_DEPLOY_SPLITS", (sp,), int)
+            ex = {}
+            for s2 in dsp:
+                d2 = split_of(W.K, s2)
+                ex[str(s2)] = (d2, Reporter(W, d2["rep"], d2["act"]))
+            r = train_ppo(W, dep, "peek", seed, a.threads, curve, pool=np.arange(WO.K), train_world=WO,
+                          na_target=int(dep["act"].size), extra_deploys=ex)
+            extra = r.pop("extra")
+            r.pop("chosen"), r.pop("rep")
+            res = [dict(base, method=me, regime="peek_xline", split=int(s2), trained_with_split=sp,
+                        **{f"rep_{k}": v for k, v in e["rep"].items()}, chosen=e["chosen"], **r)
+                   for s2, e in extra.items()]
+        elif me in SA_TSCALE or me == "greedy_swap":
+            r = (greedy_swap(W, dep, seed, curve) if me == "greedy_swap"
+                 else anneal(W, dep, seed, curve, tscale=SA_TSCALE[me]))
+            res = [dict(base, method=me, regime="peek", **{f"rep_{k}": v for k, v in r.pop("rep").items()}, **r)]
         elif me == "critic":
             r = train_critic(W, dep, seed, a.threads, curve)
             res = [dict(base, method=k, regime="peek", diag=r["diag"],
